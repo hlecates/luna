@@ -1,0 +1,19 @@
+; DeeperNetwork property template
+; Architecture: 2 -> 4 -> 4 -> 3 -> 1 with ReLU after each hidden layer.
+
+(declare-const X_0 Real)
+(declare-const X_1 Real)
+
+(declare-const Y_0 Real)
+
+; Input bounds [-1, 1] for each input
+(assert (>= X_0 -1.0))
+(assert (<= X_0  1.0))
+
+(assert (>= X_1 -1.0))
+(assert (<= X_1  1.0))
+
+; Output condition (example)
+; Mark UNSAFE when the scalar output exceeds a threshold.
+; Unsafe if Y_0 >= 0.0
+(assert (>= Y_0 0.0))

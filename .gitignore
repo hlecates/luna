@@ -1,0 +1,219 @@
+# ============================================================================
+# LIRPA .gitignore
+# Prevents tracking of build artifacts, downloaded dependencies, and IDE files
+# ============================================================================
+
+# Build artifacts
+*.d
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+*.elf
+build/
+bin/
+lib/
+
+# CMake generated files
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# ============================================================================
+# Downloaded Dependencies (auto-downloaded by CMake)
+# These are large files that should not be committed
+# ============================================================================
+
+# Boost (large library, ~200MB)
+/tools/boost-*/
+/tools/boost_*.tar.gz
+
+# PyTorch/LibTorch (very large, ~2GB)
+/tools/libtorch-*/
+/tools/libtorch*.zip
+
+# Protobuf
+/tools/protobuf-*/
+/tools/protobuf*.tar.gz
+
+# ONNX
+/tools/onnx-*/
+/tools/onnx*.tar.gz
+
+# OpenBLAS
+/tools/OpenBLAS-*/
+/tools/OpenBLAS*.tar.gz
+
+# Pybind11 (if used in future)
+/tools/pybind11-*/
+/tools/pybind11*.tar.gz
+
+# ============================================================================
+# IDE and Editor files
+# ============================================================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (CLion, etc.)
+.idea/
+cmake-build-*/
+
+# Vim
+*~
+*.swp
+*.swo
+.*.sw?
+
+# Emacs
+*~
+\#*\#
+.\#*
+TAGS
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ============================================================================
+# Python artifacts (if Python bindings added later)
+# ============================================================================
+
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+wheelhouse/
+.mypy_cache/
+.pytest_cache/
+*.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# ============================================================================
+# Logs and temporary files
+# ============================================================================
+
+*.log
+*.out
+*.err
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+
+# Core dumps
+core
+core.*
+
+# ============================================================================
+# Test and analysis outputs
+# ============================================================================
+
+# Dependency analysis outputs
+lirpa_deps.*
+lirpa_manifest.txt
+dependency_graph.*
+analyze_deps.py
+
+# Test results
+test_results/
+*.test
+*.tests
+
+# Profiling data
+*.prof
+*.gcda
+*.gcno
+*.gcov
+gmon.out
+callgrind.out.*
+
+# ============================================================================
+# LIRPA-specific outputs
+# ============================================================================
+
+# ONNX models (keep small examples, ignore large ones)
+/resources/onnx/*.onnx
+!/resources/onnx/small_*.onnx
+!/resources/onnx/example_*.onnx
+
+# VNN-LIB property files (keep examples)
+# Uncomment if you have large property files
+# /resources/properties/*.vnnlib
+
+# Analysis results
+results/
+output/
+*.results
+*.bounds
+
+# ============================================================================
+# Documentation builds
+# ============================================================================
+
+# Doxygen
+docs/html/
+docs/latex/
+docs/xml/
+Doxyfile.bak
+
+# Sphinx
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# ============================================================================
+# Package managers and dependencies
+# ============================================================================
+
+# Conan
+conaninfo.txt
+conanbuildinfo.*
+conan.lock
+
+# vcpkg
+vcpkg_installed/
+
+# ============================================================================
+# Keep these files
+# ============================================================================
+
+# Force include download scripts (small text files)
+!/tools/download_*.sh
+!/tools/download_*.bat
+
+# Force include CMakeLists and source files
+!CMakeLists.txt
+!*.cpp
+!*.h
+!*.hpp
+
+# Force include documentation
+!README.md
+!*.md
+!LICENSE
+!AUTHORS
+
+# Downloaded dependency archives (large files)
+tools/*.tar.gz
+tools/*.zip
