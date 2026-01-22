@@ -387,8 +387,6 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
     // }
 
     if (alphaParams.empty()) {
-        printf("[ERROR] No alpha parameters found! Alpha-CROWN optimization cannot proceed.\n");
-        printf("[ERROR] This usually means ReLU nodes were not properly initialized.\n");
         log("computeOptimizedBounds() - No alpha parameters found, returning CROWN bounds");
         _crownAnalysis->run(false); // No gradients needed for fallback CROWN
         return side == LirpaConfiguration::BoundSide::Lower ? extractLowerBoundsFromCROWN() : extractUpperBoundsFromCROWN();
@@ -409,9 +407,6 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
     const unsigned early_stop_patience = 5;  // Stop if no improvement for 5 iterations
     unsigned iterations_without_improvement = 0;
     float best_loss = std::numeric_limits<float>::infinity();
-
-    printf("[Alpha-CROWN %s] Optimizing with %u iterations (max), %zu params, lr=%.3f\n",
-           isLower ? "LOWER" : "UPPER", _iteration, alphaParams.size(), currentLR);
 
     // Optimization loop
     for (unsigned iter = 0; iter < _iteration; ++iter) {
@@ -471,29 +466,13 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
             iterations_without_improvement++;
         }
 
-        // Print one-line summary for each iteration
-        printf("[%s iter %2u] L:[%.6f] U:[%.6f] loss:%.6f lr:%.6f%s\n",
-               isLower ? "LOWER" : "UPPER", iter,
-               currentLower[0].item<float>(), currentUpper[0].item<float>(),
-               loss.defined() ? loss.item<float>() : 0.0f,
-               currentLR,
-               improved ? " *improved*" : "");
-
         // Early stopping check
         if (iterations_without_improvement >= early_stop_patience) {
-            printf("[Alpha-CROWN %s] Early stopping: No improvement for %u iterations\n",
-                   isLower ? "LOWER" : "UPPER", early_stop_patience);
             break;
         }
 
         // Gradient step (except on last iteration)
         if (iter < _iteration - 1 && loss.defined()) {
-            // Gradient verification: Check if loss has gradient function attached
-            if (!loss.grad_fn()) {
-                printf("[WARNING] Alpha-CROWN iter %u: Loss tensor has no grad_fn! Gradients will not flow.\n", iter);
-                printf("[WARNING] This usually means weight matrices don't have requires_grad=True.\n");
-            }
-
             optimizer->zero_grad();
             loss.backward();
 
@@ -515,11 +494,6 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
                     total_grad_norm += param.grad().norm().item<float>();
                     params_with_grad++;
                 }
-            }
-
-            if (!has_gradients && iter == 0) {
-                printf("[ERROR] Alpha-CROWN iter %u: No gradients computed after backward()!\n", iter);
-                printf("[ERROR] Alpha optimization will not work. Check weight matrix properties.\n");
             }
 
             optimizer->step();
@@ -931,12 +905,10 @@ torch::Tensor AlphaCROWNAnalysis::extractLowerBoundsFromCROWN()
     // Fallback to IBP bounds if concrete bounds not available
     if (_crownAnalysis->hasIBPBounds(outputIndex)) {
         torch::Tensor lowerBounds = _crownAnalysis->getIBPLowerBound(outputIndex);
-        printf("[DEBUG extractLowerBounds] Using IBP bounds (fallback)\n");
         return lowerBounds;
     }
 
     // Return placeholder if no bounds available
-    printf("[DEBUG extractLowerBounds] No bounds available, returning zeros\n");
     auto options = torch::TensorOptions().dtype(torch::kFloat32).device(_torchModel->getDevice());
     return torch::zeros({1}, options);
 }

@@ -175,8 +175,6 @@ public:
 
     void print() const
     {
-        for ( auto it = begin(); it != end(); ++it )
-            std::cout << *it;
     }
 
     Value getRandomElement()

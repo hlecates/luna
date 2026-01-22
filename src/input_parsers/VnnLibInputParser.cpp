@@ -4,7 +4,6 @@
 #include "MStringf.h"
 
 #include <boost/regex.hpp>
-#include <iostream>
 #include <limits>
 
 // Helper function to extract scalar values
@@ -27,7 +26,6 @@ String VnnLibInputParser::readVnnlibFile(const String &vnnlibFilePath)
 
     if (!File::exists(vnnlibFilePath))
     {
-        std::cerr << "[VnnLibInputParser] ERROR: File not found!" << std::endl;
         throw InputParserError(InputParserError::FILE_DOESNT_EXIST,
                               Stringf("VNN-LIB file not found: %s", vnnlibFilePath.ascii()).ascii());
     }

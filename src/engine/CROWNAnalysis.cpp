@@ -1049,11 +1049,6 @@ torch::Tensor CROWNAnalysis::preprocessC(const torch::Tensor& C, unsigned startI
     
     // Ensure outputSize is valid
     if (outputSize == 0) {
-        std::cerr << "[WARNING] CROWNAnalysis::preprocessC: node has zero output size"
-                  << " (startIndex=" << startIndex 
-                  << ", nodeName=" << startNode->getNodeName().ascii()
-                  << ", nodeType=" << static_cast<int>(startNode->getNodeType()) << ")"
-                  << " - using size 1 as fallback" << std::endl;
         outputSize = 1;  // Use 1 as fallback to avoid division by zero
     }
     
@@ -1501,30 +1496,6 @@ void CROWNAnalysis::addBias(unsigned nodeIndex, const torch::Tensor& lBias, cons
             torch::Tensor existing = _lowerBias[nodeIndex];
             torch::Tensor normalized_existing = normalize_bias_shape(existing);
             
-            // Debug: Log bias shapes before and after normalization
-            std::cout << "[CROWNAnalysis::addBias] Node " << nodeIndex 
-                      << " merging biases: existing shape [";
-            for (int64_t i = 0; i < existing.dim(); ++i) {
-                if (i > 0) std::cout << ", ";
-                std::cout << existing.size(i);
-            }
-            std::cout << "] -> normalized [";
-            for (int64_t i = 0; i < normalized_existing.dim(); ++i) {
-                if (i > 0) std::cout << ", ";
-                std::cout << normalized_existing.size(i);
-            }
-            std::cout << "], new shape [";
-            for (int64_t i = 0; i < lBias.dim(); ++i) {
-                if (i > 0) std::cout << ", ";
-                std::cout << lBias.size(i);
-            }
-            std::cout << "] -> normalized [";
-            for (int64_t i = 0; i < normalized_lBias.dim(); ++i) {
-                if (i > 0) std::cout << ", ";
-                std::cout << normalized_lBias.size(i);
-            }
-            std::cout << "]" << std::endl;
-            
             // Check if shapes are compatible after normalization
             if (normalized_existing.sizes() != normalized_lBias.sizes()) {
                 std::ostringstream oss;
@@ -1584,10 +1555,7 @@ void CROWNAnalysis::markProcessed(unsigned nodeIndex)
 
 void CROWNAnalysis::log( const String &message )
 {
-    if ( LirpaConfiguration::NETWORK_LEVEL_REASONER_LOGGING && LirpaConfiguration::VERBOSITY > 0 )
-    {
-        printf( "CROWNAnalysis: %s\n", message.ascii() );
-    }
+    (void)message;
 }
 
 torch::Tensor CROWNAnalysis::getIBPLowerBound(unsigned nodeIndex)

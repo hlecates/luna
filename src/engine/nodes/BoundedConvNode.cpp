@@ -4,7 +4,6 @@
 #include <torch/nn/functional.h>
 #include <stdexcept>
 #include <cmath>
-#include <cstdio>
 
 namespace NLR {
 
@@ -79,21 +78,17 @@ void BoundedConvNode::initializeFromConv1d(const torch::nn::Conv1d& convModule) 
         if (!weight.requires_grad() || !weight.is_contiguous() || weight.dtype() != torch::kFloat32) {
             weightNeedsFix = true;
             if (!weight.requires_grad()) {
-                printf("[WARNING] BoundedConvNode (Conv1d): Weight tensor does not have requires_grad=True\n");
             }
             if (!weight.is_contiguous()) {
-                printf("[WARNING] BoundedConvNode (Conv1d): Weight tensor is not contiguous.\n");
             }
             if (weight.dtype() != torch::kFloat32) {
-                printf("[WARNING] BoundedConvNode (Conv1d): Weight tensor dtype is not Float32.\n");
             }
         }
         
         // Automatically fix weight tensor
-        if (weightNeedsFix) {
-            conv1d->weight = weight.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network weights are constants;
-            printf("[INFO] BoundedConvNode (Conv1d): Fixed weight tensor properties (Float32, contiguous, requires_grad=True)\n");
-        }
+            if (weightNeedsFix) {
+                conv1d->weight = weight.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network weights are constants;
+            }
         
         // Similar checks and fixes for bias if it exists
         if (has_bias && conv1d->bias.defined()) {
@@ -102,20 +97,16 @@ void BoundedConvNode::initializeFromConv1d(const torch::nn::Conv1d& convModule) 
             if (!bias.requires_grad() || !bias.is_contiguous() || bias.dtype() != torch::kFloat32) {
                 biasNeedsFix = true;
                 if (!bias.requires_grad()) {
-                    printf("[WARNING] BoundedConvNode (Conv1d): Bias tensor does not have requires_grad=True\n");
                 }
                 if (!bias.is_contiguous()) {
-                    printf("[WARNING] BoundedConvNode (Conv1d): Bias tensor is not contiguous.\n");
                 }
                 if (bias.dtype() != torch::kFloat32) {
-                    printf("[WARNING] BoundedConvNode (Conv1d): Bias tensor dtype is not Float32.\n");
                 }
             }
             
             // Automatically fix bias tensor
             if (biasNeedsFix) {
                 conv1d->bias = bias.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network biases are constants;
-                printf("[INFO] BoundedConvNode (Conv1d): Fixed bias tensor properties (Float32, contiguous, requires_grad=True)\n");
             }
         }
     }
@@ -166,13 +157,10 @@ void BoundedConvNode::initializeFromConv2d(const torch::nn::Conv2d& convModule) 
         if (!weight.requires_grad() || !weight.is_contiguous() || weight.dtype() != torch::kFloat32) {
             weightNeedsFix = true;
             if (!weight.requires_grad()) {
-                printf("[WARNING] BoundedConvNode: Weight tensor does not have requires_grad=True\n");
             }
             if (!weight.is_contiguous()) {
-                printf("[WARNING] BoundedConvNode: Weight tensor is not contiguous.\n");
             }
             if (weight.dtype() != torch::kFloat32) {
-                printf("[WARNING] BoundedConvNode: Weight tensor dtype is not Float32.\n");
             }
         }
         
@@ -180,7 +168,6 @@ void BoundedConvNode::initializeFromConv2d(const torch::nn::Conv2d& convModule) 
         // NOTE: Do NOT use detach() as it breaks the computation graph needed for Alpha-CROWN
         if (weightNeedsFix) {
             conv2d->weight = weight.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network weights are constants;
-            printf("[INFO] BoundedConvNode: Fixed weight tensor properties (Float32, contiguous, requires_grad=True)\n");
         }
         
         // Similar checks and fixes for bias if it exists
@@ -190,13 +177,10 @@ void BoundedConvNode::initializeFromConv2d(const torch::nn::Conv2d& convModule) 
             if (!bias.requires_grad() || !bias.is_contiguous() || bias.dtype() != torch::kFloat32) {
                 biasNeedsFix = true;
                 if (!bias.requires_grad()) {
-                    printf("[WARNING] BoundedConvNode: Bias tensor does not have requires_grad=True\n");
                 }
                 if (!bias.is_contiguous()) {
-                    printf("[WARNING] BoundedConvNode: Bias tensor is not contiguous.\n");
                 }
                 if (bias.dtype() != torch::kFloat32) {
-                    printf("[WARNING] BoundedConvNode: Bias tensor dtype is not Float32.\n");
                 }
             }
             
@@ -204,7 +188,6 @@ void BoundedConvNode::initializeFromConv2d(const torch::nn::Conv2d& convModule) 
             // NOTE: Do NOT use detach() as it breaks the computation graph needed for Alpha-CROWN
             if (biasNeedsFix) {
                 conv2d->bias = bias.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network biases are constants;
-                printf("[INFO] BoundedConvNode: Fixed bias tensor properties (Float32, contiguous, requires_grad=True)\n");
             }
         }
     }
@@ -366,8 +349,6 @@ void BoundedConvNode::boundBackward(
             int64_t W = H;
             
             if (in_channels * H * W != total_input_size) {
-                 printf("WARNING: BoundedConvNode inferred shape mismatch: total=%lld, C=%lld, H=%lld, W=%lld\n", 
-                        (long long)total_input_size, (long long)in_channels, (long long)H, (long long)W);
             }
             
             input_shape = {1, static_cast<int>(in_channels), static_cast<int>(H), static_cast<int>(W)};
@@ -785,7 +766,7 @@ BoundA BoundedConvNode::boundOneSide(const BoundA& last_A,
             // Patches too large, convert to matrix
             // return patches_to_matrix(...)
            
-            printf("BoundedConvNode: Patches too large, but conversion not implemented. Continuing with patches (might be slow or wrong).\n");
+            (void)0;
         }
         
         return BoundA(last_patches->create_similar(
@@ -954,17 +935,11 @@ BoundedTensor<torch::Tensor> BoundedConvNode::computeIntervalBoundPropagation(
                             best_W = 1;
                         } else {
                             // Last resort - use [C, 1, W] and hope for the best
-                            std::cerr << "[BoundedConvNode] WARNING: No valid layout found for spatial_size=" 
-                                      << spatial_size << ", kernel=(" << kernel_h << "x" << kernel_w 
-                                      << "), using [C, 1, W] as fallback" << std::endl;
                             best_H = 1;
                             best_W = spatial_size;
                         }
                     }
-                    
-                    std::cerr << "[BoundedConvNode] Non-square spatial size " << spatial_size 
-                              << ", kernel (" << kernel_h << "x" << kernel_w << "), using [" 
-                              << in_channels << ", " << best_H << ", " << best_W << "]" << std::endl;
+
                     input_lower = input_lower.reshape({in_channels, best_H, best_W});
                     input_upper = input_upper.reshape({in_channels, best_H, best_W});
                 }
@@ -1144,8 +1119,6 @@ unsigned BoundedConvNode::inferOutputSize(unsigned inputSize) const {
         
         // Verify assumption roughly
         if (in_channels * H * W != inputSize) {
-             printf("BoundedConvNode::inferOutputSize warning: inputSize %u not matching [C=%lld, H=%lld, W=%lld]\n", 
-                    inputSize, (long long)in_channels, (long long)H, (long long)W);
         }
         
         std::vector<int> kernel_size = {static_cast<int>(weight.size(2)),

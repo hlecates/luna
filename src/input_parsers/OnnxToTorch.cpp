@@ -41,11 +41,9 @@
 #include "Map.h"
 #include "Set.h"
 #include <fstream>
-#include <iostream>
 #include <memory>
 #include <cstdlib>
 #include <cstdio>
-#include <chrono>
 #include <torch/torch.h>
 #include <onnx.proto3.pb.h>
 
@@ -316,8 +314,6 @@ OnnxToTorchParser::OnnxToTorchParser(const String &path) {
 
     // Run ONNX shape inference using Python if no intermediate shapes are present
     if (_onnx_model.graph().value_info_size() == 0) {
-        std::cerr << "[OnnxToTorchParser] No intermediate shape information found. Running Python ONNX shape inference..." << std::endl;
-        
         // Create temporary output path
         std::string temp_path = std::string(path.ascii()) + ".inferred.onnx";
         
@@ -338,17 +334,12 @@ OnnxToTorchParser::OnnxToTorchParser(const String &path) {
                 inferred_input.read(inferred_buffer.data(), inferred_size);
                 
                 std::string inferred_string(inferred_buffer.data(), inferred_size);
-                if (_onnx_model.ParseFromString(inferred_string)) {
-                    std::cerr << "[OnnxToTorchParser] Shape inference completed successfully. value_info entries: "
-                              << _onnx_model.graph().value_info_size() << std::endl;
-                }
+                _onnx_model.ParseFromString(inferred_string);
                 inferred_input.close();
                 
                 // Clean up temporary file
                 std::remove(temp_path.c_str());
             }
-        } else {
-            std::cerr << "[OnnxToTorchParser] Warning: Python shape inference failed. Proceeding without intermediate shapes." << std::endl;
         }
     }
 
@@ -417,12 +408,6 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
             }
             if (!dims.empty()) {
                 shape_metadata[input.name()] = dims;
-                std::cout << "[OnnxToTorch] Input shape for " << input.name().c_str() << ": [";
-                for (unsigned i = 0; i < dims.size(); ++i) {
-                    std::cout << dims[i];
-                    if (i < dims.size() - 1) std::cout << ", ";
-                }
-                std::cout << "]" << std::endl;
             }
         }
     }
@@ -447,8 +432,6 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
     
     // FIRST PASS: Infer shapes for all operations
     // This ensures Concat and other operations have access to all input shapes
-    std::cout << "[OnnxToTorch] Running shape inference pass..." << std::endl;
-    
     // Iterate multiple times to handle dependencies
     for (int pass = 0; pass < 3; ++pass) {
         int shapes_added = 0;
@@ -467,15 +450,6 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                         Vector<int> input0_shape = shape_metadata.exists(node.input(0)) ? 
                                                    shape_metadata[node.input(0)] : Vector<int>();
                         String weight_name = node.input(1);
-                        
-                        // Debug for /linear_weight/MatMul
-                        if (outputName.contains("linear_weight")) {
-                            std::cout << "[DEBUG] Processing " << outputName.ascii() << std::endl;
-                            std::cout << "  Input 0: " << node.input(0).c_str() << " has_shape=" 
-                                      << (shape_metadata.exists(node.input(0)) ? "yes" : "no") << std::endl;
-                            std::cout << "  Input 1: " << weight_name.ascii() << " is_init=" 
-                                      << (name_to_initializer.exists(weight_name) ? "yes" : "no") << std::endl;
-                        }
                         
                         if (!input0_shape.empty() && name_to_initializer.exists(weight_name)) {
                             const auto& weight_tensor = name_to_initializer[weight_name];
@@ -731,7 +705,6 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                     auto constantNode = std::make_shared<NLR::BoundedConstantNode>(constant, tensorName);
                     constantNode->setNodeIndex(i);
                     nodes.append(constantNode);
-                    std::cerr << "  Constant node processing completed successfully" << std::endl << std::flush;
                 } catch (const LirpaError& e) {
                     // Re-throw LirpaError exceptions as they are already properly formatted
                     throw;
@@ -877,13 +850,11 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                 } else if (node.op_type() == "Conv") {
                     boundedNode = BoundedOperationConverter::convertConv(node, constantsMap, name_to_input, name_to_initializer, shape_metadata);
                     if (!boundedNode) {
-                        std::cerr << "[ERROR] Conv conversion returned nullptr for node " << tensorName.ascii() << std::endl;
                         onnxToTorchBoundedModuleCreationError("Conv", "Conversion returned nullptr");
                     }
                 } else if (node.op_type() == "ConvTranspose") {
                     boundedNode = BoundedOperationConverter::convertConvTranspose(node, constantsMap, name_to_input, name_to_initializer);
                     if (!boundedNode) {
-                        std::cerr << "[ERROR] ConvTranspose conversion returned nullptr for node " << tensorName.ascii() << std::endl;
                         onnxToTorchBoundedModuleCreationError("ConvTranspose", "Conversion returned nullptr");
                     }
                 } else if (node.op_type() == "BatchNormalization") {
@@ -891,26 +862,21 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                 } else if (node.op_type() == "Slice") {
                     boundedNode = BoundedOperationConverter::convertSlice(node, name_to_input, name_to_initializer, shape_metadata);
                     if (!boundedNode) {
-                        std::cerr << "[ERROR] Slice conversion returned nullptr for node " << tensorName.ascii() << std::endl;
                         onnxToTorchBoundedModuleCreationError("Slice", "Conversion returned nullptr");
                     }
                 } else if (node.op_type() == "Gather") {
                     // TODO: Implement proper BoundedGatherNode with correct bound propagation
                     // For now, treat as Identity (conservative but sound)
-                    std::cerr << "[INFO] Gather operation approximated as Identity (conservative bounds)" << std::endl;
                     boundedNode = BoundedOperationConverter::convertIdentity(node, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Cast") {
                     // Cast operation - bounds pass through unchanged (data type conversion doesn't affect bounds)
-                    std::cerr << "[INFO] Cast operation treated as Identity (bounds preserved)" << std::endl;
                     boundedNode = BoundedOperationConverter::convertIdentity(node, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Dropout") {
                     // Dropout is disabled during inference - acts as identity pass-through
-                    std::cerr << "[INFO] Dropout operation treated as Identity (inference mode)" << std::endl;
                     boundedNode = BoundedOperationConverter::convertIdentity(node, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Concat") {
                     boundedNode = BoundedOperationConverter::convertConcat(node, name_to_input, name_to_initializer, shape_metadata);
                     if (!boundedNode) {
-                        std::cerr << "[ERROR] Concat conversion returned nullptr for node " << tensorName.ascii() << std::endl;
                         onnxToTorchBoundedModuleCreationError("Concat", "Conversion returned nullptr");
                     }
                 } else {
@@ -939,9 +905,6 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                                     output_shape.append(batch);
                                     output_shape.append(N);
                                     
-                                    std::cout << "[ShapeInference] " << node.op_type().c_str() 
-                                              << " output " << outputName.ascii() << ": [" 
-                                              << batch << ", " << N << "]" << std::endl;
                                 }
                             }
                         }
@@ -1186,19 +1149,15 @@ Vector<String> computeTopologicalOrder(const Map<String, onnx::NodeProto>& name_
                                       const Map<String, onnx::ValueInfoProto>& name_to_input,
                                       const Map<String, onnx::TensorProto>& name_to_initializer)
 {
-    std::cerr << "[GraphUtils] Starting simplified topological sort" << std::endl << std::flush;
-    
     Vector<String> order;
     
     // First, add all inputs and initializers (sources)
     for (auto it = name_to_input.begin(); it != name_to_input.end(); ++it) {
         order.append(it->first);
-        std::cerr << "[GraphUtils] Added input: " << it->first << std::endl << std::flush;
     }
     
     for (auto it = name_to_initializer.begin(); it != name_to_initializer.end(); ++it) {
         order.append(it->first);
-        std::cerr << "[GraphUtils] Added initializer: " << it->first << std::endl << std::flush;
     }
     
     // Then add all node outputs in the order they appear in the graph
@@ -1217,18 +1176,10 @@ Vector<String> computeTopologicalOrder(const Map<String, onnx::NodeProto>& name_
             }
             if (!already_exists) {
                 order.append(output);
-                std::cerr << "[GraphUtils] Added node output: " << output << std::endl << std::flush;
             }
         }
     }
-    
-    std::cerr << "[GraphUtils] Final order size: " << order.size() << std::endl << std::flush;
-    std::cerr << "[GraphUtils] Topological order: ";
-    for (unsigned i = 0; i < order.size(); ++i) {
-        std::cerr << order[i] << " ";
-    }
-    std::cerr << std::endl << std::flush;
-    
+
     return order;
 }
 
@@ -1338,8 +1289,6 @@ torch::Tensor processInitializer(const onnx::TensorProto& tensor) {
                 
                 // If the shape specifies 0 elements, create an empty tensor
                 if (total_elements == 0) {
-                    std::cerr << "      [ConstantProcessor] Creating empty tensor '" << tensor.name() 
-                              << "' with shape containing 0" << std::endl;
                     torch::Tensor result = torch::empty(shape, torch::kFloat32);
                     return result;
                 }
@@ -1932,14 +1881,6 @@ namespace BoundedOperationConverter {
             }
             boundedNode->setInputShape(shapeVec);
 
-            std::cout << "[OnnxToTorch::convertFlatten] Shape vector for backward: [";
-            for (size_t i = 0; i < shapeVec.size(); ++i) {
-                std::cout << shapeVec[i];
-                if (i < shapeVec.size() - 1) std::cout << ", ";
-            }
-            std::cout << "]" << std::endl;
-            std::cout << "[OnnxToTorch::convertFlatten] Successfully set sizes for Flatten node" << std::endl;
-            std::cout << "[OnnxToTorch::convertFlatten] ======================================\n" << std::endl;
         }
 
         return boundedNode;
@@ -2158,12 +2099,6 @@ namespace BoundedOperationConverter {
             String inputName = node.input(0);
             if (shape_metadata.exists(inputName)) {
                 input_shape = shape_metadata[inputName];
-                std::cout << "[OnnxToTorch::convertConv] Using ONNX shape metadata for input " << inputName.ascii() << ": [";
-                for (unsigned i = 0; i < input_shape.size(); ++i) {
-                    std::cout << input_shape[i];
-                    if (i < input_shape.size() - 1) std::cout << ", ";
-                }
-                std::cout << "]" << std::endl;
             }
         }
 
@@ -2284,15 +2219,12 @@ namespace BoundedOperationConverter {
         if (is_conv1d) {
             // Conv1D: ONNX pads format is [begin, end]
             if (pads.size() == 2) {
-                std::cout << "[OnnxToTorch::convertConv] Conv1d Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
                 // Check if padding is symmetric
                 if (pads[0] == pads[1]) {
                     padding = {pads[0]};
                 } else {
                     // Asymmetric padding - use begin padding
                     padding = {pads[0]};
-                    std::cerr << "[OnnxToTorch::convertConv] Warning: Asymmetric padding detected for Conv1d. "
-                              << "Using begin=" << pads[0] << " padding." << std::endl;
                 }
             } else if (pads.empty()) {
                 padding = {0};
@@ -2303,7 +2235,6 @@ namespace BoundedOperationConverter {
         } else {
             // Conv2D: ONNX pads format is [top, left, bottom, right]
             if (pads.size() == 4) {
-                std::cout << "[OnnxToTorch::convertConv] Conv2d Pads: [" << pads[0] << ", " << pads[1] << ", " << pads[2] << ", " << pads[3] << "]" << std::endl;
                 // Check if padding is symmetric
                 if (pads[0] == pads[2] && pads[1] == pads[3]) {
                     padding = {pads[0], pads[1]};
@@ -2311,11 +2242,8 @@ namespace BoundedOperationConverter {
                     // Asymmetric padding will need special handling
                     // For now, we'll use the top and left padding values
                     padding = {pads[0], pads[1]};
-                    std::cerr << "[OnnxToTorch::convertConv] Warning: Asymmetric padding detected for Conv2d. "
-                              << "Using top=" << pads[0] << " and left=" << pads[1] << " padding." << std::endl;
                 }
             } else if (pads.size() == 2) {
-                std::cout << "[OnnxToTorch::convertConv] Conv2d Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
                 padding = {pads[0], pads[1]};
             } else if (pads.empty()) {
                 padding = {0, 0};
@@ -2403,8 +2331,6 @@ namespace BoundedOperationConverter {
                     int kernel_length = weights.size(2);
                     int out_l = (L + 2 * padding[0] - dilation_vec[0] * (kernel_length - 1) - 1) / stride_vec[0] + 1;
                     output_size = out_channels * out_l;
-                    std::cout << "[OnnxToTorch::convertConv] Conv1d computed output size: " << output_size 
-                              << " (out_channels=" << out_channels << ", out_l=" << out_l << ")" << std::endl;
                 }
             } else if (!is_conv1d && input_shape.size() >= 4) {
                 // Conv2D: [N, C, H, W]
@@ -2416,16 +2342,12 @@ namespace BoundedOperationConverter {
                     int out_h = (H + 2 * padding[0] - dilation_vec[0] * (kernel_height - 1) - 1) / stride_vec[0] + 1;
                     int out_w = (W + 2 * padding[1] - dilation_vec[1] * (kernel_width - 1) - 1) / stride_vec[1] + 1;
                     output_size = out_channels * out_h * out_w;
-                    std::cout << "[OnnxToTorch::convertConv] Conv2d computed output size: " << output_size 
-                              << " (out_channels=" << out_channels << ", out_h=" << out_h << ", out_w=" << out_w << ")" << std::endl;
                 }
             }
             
             if (input_size > 0 && output_size > 0) {
                 boundedNode->setInputSize(input_size);
                 boundedNode->setOutputSize(output_size);
-                std::cout << "[OnnxToTorch::convertConv] Set input_size=" << input_size 
-                          << ", output_size=" << output_size << " from ONNX metadata" << std::endl;
                 
                 // Also set the full input/output shape vectors for IBP
                 std::vector<int> input_shape_vec;
@@ -2461,17 +2383,6 @@ namespace BoundedOperationConverter {
                 if (!input_shape_vec.empty() && !output_shape_vec.empty()) {
                     boundedNode->setInputShape(input_shape_vec);
                     boundedNode->setOutputShape(output_shape_vec);
-                    std::cout << "[OnnxToTorch::convertConv] Set input_shape=[";
-                    for (size_t i = 0; i < input_shape_vec.size(); ++i) {
-                        std::cout << input_shape_vec[i];
-                        if (i < input_shape_vec.size() - 1) std::cout << ", ";
-                    }
-                    std::cout << "], output_shape=[";
-                    for (size_t i = 0; i < output_shape_vec.size(); ++i) {
-                        std::cout << output_shape_vec[i];
-                        if (i < output_shape_vec.size() - 1) std::cout << ", ";
-                    }
-                    std::cout << "]" << std::endl;
                 }
             }
         }
@@ -2569,7 +2480,6 @@ namespace BoundedOperationConverter {
         // PyTorch ConvTranspose2d: single value or (height, width)
         std::vector<int64_t> padding;
         if (pads.size() == 4) {
-            std::cout << "[OnnxToTorch::convertConvTranspose] Pads: [" << pads[0] << ", " << pads[1] << ", " << pads[2] << ", " << pads[3] << "]" << std::endl;
             // Check if padding is symmetric
             if (pads[0] == pads[2] && pads[1] == pads[3]) {
                 padding = {pads[0], pads[1]};
@@ -2577,11 +2487,8 @@ namespace BoundedOperationConverter {
                 // Asymmetric padding will need special handling
                 // For now, we'll use the top and left padding values
                 padding = {pads[0], pads[1]};
-                std::cerr << "[OnnxToTorch::convertConvTranspose] Warning: Asymmetric padding detected. "
-                          << "Using top=" << pads[0] << " and left=" << pads[1] << " padding." << std::endl;
             }
         } else if (pads.size() == 2) {
-            std::cout << "[OnnxToTorch::convertConvTranspose] Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
             padding = {pads[0], pads[1]};
         } else if (pads.empty()) {
             padding = {0, 0};
@@ -2597,9 +2504,6 @@ namespace BoundedOperationConverter {
 
         // Apply assertions from auto_LiRPA implementation
         if (output_padding_vec.size() != 2 || output_padding_vec[0] != 0 || output_padding_vec[1] != 0) {
-            std::cerr << "[OnnxToTorch::convertConvTranspose] Warning: output_padding must be [0, 0]. "
-                      << "Provided: [" << (output_padding_vec.size() > 0 ? output_padding_vec[0] : 0) << ", "
-                      << (output_padding_vec.size() > 1 ? output_padding_vec[1] : 0) << "]" << std::endl;
             output_padding_vec = {0, 0};
         }
         if (dilation_vec[0] != 1 || dilation_vec[1] != 1) {
@@ -2646,17 +2550,6 @@ namespace BoundedOperationConverter {
         auto boundedNode = std::make_shared<NLR::BoundedConvTransposeNode>(convtranspose_module,
                                                                            NLR::ConvMode::MATRIX);
 
-        std::cout << "[OnnxToTorch::convertConvTranspose] Created ConvTranspose node with:"
-                  << " in_channels=" << in_channels
-                  << ", out_channels=" << out_channels
-                  << ", kernel=(" << kernel_height << "," << kernel_width << ")"
-                  << ", stride=(" << stride_vec[0] << "," << stride_vec[1] << ")"
-                  << ", padding=(" << padding[0] << "," << padding[1] << ")"
-                  << ", output_padding=(" << output_padding_vec[0] << "," << output_padding_vec[1] << ")"
-                  << ", dilation=(" << dilation_vec[0] << "," << dilation_vec[1] << ")"
-                  << ", groups=" << group
-                  << ", has_bias=" << has_bias << std::endl;
-
         return boundedNode;
     }
 
@@ -2664,15 +2557,8 @@ namespace BoundedOperationConverter {
                                                           const Map<String, onnx::ValueInfoProto>& name_to_input,
                                                           const Map<String, onnx::TensorProto>& name_to_initializer,
                                                           const Map<String, Vector<int>>& shape_metadata) {
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2643\",\"message\":\"convertConcat entry\",\"data\":{\"node_name\":\"" << node.name() << "\",\"node_output\":\"" << (node.output_size()>0?node.output(0):"") << "\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"ENTRY\"}\n"; }
-        // #endregion
         // Extract axis attribute (default = 1 in ONNX)
         int axis = AttributeUtils::getIntAttribute(node, "axis", 1);
-        
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2648\",\"message\":\"axis extracted\",\"data\":{\"axis\":" << axis << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A\"}\n"; }
-        // #endregion
         
         // Get number of inputs
         unsigned numInputs = node.input_size();
@@ -2689,14 +2575,8 @@ namespace BoundedOperationConverter {
         std::vector<unsigned> input_sizes_along_axis;
         unsigned output_size_total = 0;
         
-        std::cerr << "[convertConcat] Processing concat with axis=" << axis << ", numInputs=" << numInputs << std::endl;
-        
         for (unsigned i = 0; i < numInputs; ++i) {
             String inputName = node.input(i);
-            
-            // #region agent log
-            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2667\",\"message\":\"processing input\",\"data\":{\"input_index\":" << i << ",\"input_name\":\"" << inputName.ascii() << "\",\"in_shape_metadata\":" << (shape_metadata.exists(inputName) ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"B,E\"}\n"; }
-            // #endregion
             
             // Try to get shape from shape_metadata first (for intermediate tensors)
             TensorShape inputShape;
@@ -2709,43 +2589,14 @@ namespace BoundedOperationConverter {
                 inputShape = extractShapeFromNode(node, name_to_input, name_to_initializer, inputName);
             }
             
-            // #region agent log
-            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2680\",\"message\":\"shape extracted\",\"data\":{\"input_index\":" << i << ",\"shape_size\":" << inputShape.size() << ",\"shape_empty\":" << (inputShape.empty() ? "true" : "false") << ",\"axis\":" << axis << ",\"axis_in_bounds\":" << (axis >= 0 && axis < (int)inputShape.size() ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A,B,C\"}\n"; }
-            // #endregion
-            
-            std::cerr << "  Input " << i << " (" << inputName.ascii() << "): shape=[";
-            for (size_t j = 0; j < inputShape.size(); ++j) {
-                std::cerr << inputShape[j];
-                if (j < inputShape.size() - 1) std::cerr << ", ";
-            }
-            std::cerr << "]" << std::endl;
-            
             if (!inputShape.empty() && axis >= 0 && axis < (int)inputShape.size()) {
                 // Get size along concat axis only
                 unsigned size_along_axis = inputShape[axis];
                 input_sizes_along_axis.push_back(size_along_axis);
                 output_size_total += size_along_axis;
-                std::cerr << "    Size along axis " << axis << ": " << size_along_axis << std::endl;
-                // #region agent log
-                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2691\",\"message\":\"size added\",\"data\":{\"input_index\":" << i << ",\"size_along_axis\":" << size_along_axis << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"C\"}\n"; }
-                // #endregion
             } else {
-                // #region agent log
-                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2694\",\"message\":\"input SKIPPED\",\"data\":{\"input_index\":" << i << ",\"reason\":\"shape_empty_or_axis_out_of_bounds\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"B,C\"}\n"; }
-                // #endregion
             }
         }
-        
-        std::cerr << "[convertConcat] input_sizes_along_axis=[";
-        for (size_t i = 0; i < input_sizes_along_axis.size(); ++i) {
-            std::cerr << input_sizes_along_axis[i];
-            if (i < input_sizes_along_axis.size() - 1) std::cerr << ", ";
-        }
-        std::cerr << "]" << std::endl;
-        
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2703\",\"message\":\"input_sizes collected\",\"data\":{\"sizes_count\":" << input_sizes_along_axis.size() << ",\"expected_count\":" << numInputs << ",\"count_mismatch\":" << (input_sizes_along_axis.size() != numInputs ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"C\"}\n"; }
-        // #endregion
         
         // Store the sizes along concat axis for use in backward pass
         if (!input_sizes_along_axis.empty()) {
@@ -2766,33 +2617,14 @@ namespace BoundedOperationConverter {
                 firstShape = extractShapeFromNode(node, name_to_input, name_to_initializer, firstInputName);
             }
             
-            // #region agent log
-            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2722\",\"message\":\"before accessing firstShape[axis]\",\"data\":{\"firstShape_size\":" << firstShape.size() << ",\"axis\":" << axis << ",\"axis_in_bounds\":" << (axis >= 0 && axis < (int)firstShape.size() ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"D\"}\n"; }
-            // #endregion
-            
             if (!firstShape.empty()) {
-                // #region agent log
-                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2727\",\"message\":\"firstShape not empty, computing sizes\",\"data\":{\"axis_check\":\"about_to_access_firstShape[axis]\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"D\"}\n"; }
-                // #endregion
                 unsigned firstTensorSize = computeTensorSize(firstShape);
                 unsigned concatAxisSize = firstShape[axis];
                 unsigned computedOutputSize = firstTensorSize / concatAxisSize * output_size_total;
                 boundedNode->setInputSize(firstTensorSize);
                 boundedNode->setOutputSize(computedOutputSize);
-                
-                std::cerr << "[convertConcat] firstTensorSize=" << firstTensorSize 
-                          << ", concatAxisSize=" << concatAxisSize 
-                          << ", output_size_total=" << output_size_total 
-                          << ", computedOutputSize=" << computedOutputSize << std::endl;
-                // #region agent log
-                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2738\",\"message\":\"sizes computed successfully\",\"data\":{\"firstTensorSize\":" << firstTensorSize << ",\"concatAxisSize\":" << concatAxisSize << ",\"output_size_total\":" << output_size_total << ",\"computedOutputSize\":" << computedOutputSize << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"D\"}\n"; }
-                // #endregion
             }
         }
-        
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2746\",\"message\":\"convertConcat exit\",\"data\":{\"success\":true},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"EXIT\"}\n"; }
-        // #endregion
         return boundedNode;
     }
 

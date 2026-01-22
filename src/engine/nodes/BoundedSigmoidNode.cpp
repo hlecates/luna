@@ -5,8 +5,6 @@
 #include "Debug.h"
 #include <algorithm>
 #include <cmath>
-#include <iostream>
-#include <iomanip>
 
 namespace NLR {
 
@@ -322,33 +320,6 @@ void BoundedSigmoidNode::setOutputSize(unsigned size) {
 
 // Bound relaxation implementation (matching Python bound_relax_impl)
 void BoundedSigmoidNode::boundRelaxImpl(const torch::Tensor& input_lower, const torch::Tensor& input_upper) {
-    // DEBUG: Print input bounds
-    bool debug_sigmoid = LirpaConfiguration::NETWORK_LEVEL_REASONER_LOGGING;
-    if (debug_sigmoid && input_lower.numel() <= 10) {
-        std::cout << "\n[Sigmoid Debug] Node " << _nodeIndex << " boundRelaxImpl:" << std::endl;
-        std::cout << std::fixed << std::setprecision(8);
-        std::cout << "  input_lower: ";
-        auto lb_flat = input_lower.flatten();
-        for (int i = 0; i < lb_flat.numel(); ++i) {
-            if (lb_flat.dtype() == torch::kFloat64) {
-                std::cout << lb_flat[i].item<double>() << " ";
-            } else {
-                std::cout << lb_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << "  input_upper: ";
-        auto ub_flat = input_upper.flatten();
-        for (int i = 0; i < ub_flat.numel(); ++i) {
-            if (ub_flat.dtype() == torch::kFloat64) {
-                std::cout << ub_flat[i].item<double>() << " ";
-            } else {
-                std::cout << ub_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-    }
-    
     // Initialize masks
     mask_pos = input_lower >= 0;
     mask_neg = input_upper <= 0;
@@ -363,48 +334,12 @@ void BoundedSigmoidNode::boundRelaxImpl(const torch::Tensor& input_lower, const 
     torch::Tensor y_l = sigmoidFunc(input_lower);
     torch::Tensor y_u = sigmoidFunc(input_upper);
     
-    // DEBUG: Print sigmoid function values
-    if (debug_sigmoid && input_lower.numel() <= 10) {
-        std::cout << "  y_l (sigmoid(lower)): ";
-        auto yl_flat = y_l.flatten();
-        for (int i = 0; i < yl_flat.numel(); ++i) {
-            if (yl_flat.dtype() == torch::kFloat64) {
-                std::cout << yl_flat[i].item<double>() << " ";
-            } else {
-                std::cout << yl_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << "  y_u (sigmoid(upper)): ";
-        auto yu_flat = y_u.flatten();
-        for (int i = 0; i < yu_flat.numel(); ++i) {
-            if (yu_flat.dtype() == torch::kFloat64) {
-                std::cout << yu_flat[i].item<double>() << " ";
-            } else {
-                std::cout << yu_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-    }
     
     // k_direct is the slope of the line directly connecting (lower, func(lower)), (upper, func(upper))
     torch::Tensor k_direct = (y_u - y_l) / (input_upper - input_lower).clamp_min(1e-8);
     torch::Tensor mask_almost_the_same = (input_upper - input_lower).abs() < 1e-4;
     k_direct = torch::where(mask_almost_the_same, dsigmoidFunc(input_lower), k_direct);
     
-    // DEBUG: Print k_direct
-    if (debug_sigmoid && input_lower.numel() <= 10) {
-        std::cout << "  k_direct: ";
-        auto kd_flat = k_direct.flatten();
-        for (int i = 0; i < kd_flat.numel(); ++i) {
-            if (kd_flat.dtype() == torch::kFloat64) {
-                std::cout << kd_flat[i].item<double>() << " ";
-            } else {
-                std::cout << kd_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-    }
     
     // Upper bound for the case of input lower bound <= 0, is always the direct line
     uw = torch::where(mask_neg, k_direct, uw);
@@ -417,29 +352,6 @@ void BoundedSigmoidNode::boundRelaxImpl(const torch::Tensor& input_lower, const 
     // Generate precomputed tangent points
     auto [d_lower_precomputed, d_upper_precomputed] = generateDLowerUpper(input_lower, input_upper);
     
-    // DEBUG: Print precomputed tangent points
-    if (debug_sigmoid && input_lower.numel() <= 10) {
-        std::cout << "  d_lower_precomputed: ";
-        auto dl_flat = d_lower_precomputed.flatten();
-        for (int i = 0; i < dl_flat.numel(); ++i) {
-            if (dl_flat.dtype() == torch::kFloat64) {
-                std::cout << dl_flat[i].item<double>() << " ";
-            } else {
-                std::cout << dl_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << "  d_upper_precomputed: ";
-        auto du_flat = d_upper_precomputed.flatten();
-        for (int i = 0; i < du_flat.numel(); ++i) {
-            if (du_flat.dtype() == torch::kFloat64) {
-                std::cout << du_flat[i].item<double>() << " ";
-            } else {
-                std::cout << du_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-    }
     
     // Check if direct line can be used for mask_both cases
     torch::Tensor k_lower = dsigmoidFunc(input_lower);
@@ -447,34 +359,6 @@ void BoundedSigmoidNode::boundRelaxImpl(const torch::Tensor& input_lower, const 
     torch::Tensor mask_direct_lower = torch::logical_and(mask_both, k_direct < k_lower);
     torch::Tensor mask_direct_upper = torch::logical_and(mask_both, k_direct < k_upper);
     
-    // DEBUG: Print masks
-    if (debug_sigmoid && input_lower.numel() <= 10) {
-        std::cout << "  mask_pos: ";
-        for (int i = 0; i < mask_pos.numel(); ++i) {
-            std::cout << (mask_pos.flatten()[i].item<bool>() ? "T" : "F") << " ";
-        }
-        std::cout << std::endl;
-        std::cout << "  mask_neg: ";
-        for (int i = 0; i < mask_neg.numel(); ++i) {
-            std::cout << (mask_neg.flatten()[i].item<bool>() ? "T" : "F") << " ";
-        }
-        std::cout << std::endl;
-        std::cout << "  mask_both: ";
-        for (int i = 0; i < mask_both.numel(); ++i) {
-            std::cout << (mask_both.flatten()[i].item<bool>() ? "T" : "F") << " ";
-        }
-        std::cout << std::endl;
-        std::cout << "  mask_direct_lower: ";
-        for (int i = 0; i < mask_direct_lower.numel(); ++i) {
-            std::cout << (mask_direct_lower.flatten()[i].item<bool>() ? "T" : "F") << " ";
-        }
-        std::cout << std::endl;
-        std::cout << "  mask_direct_upper: ";
-        for (int i = 0; i < mask_direct_upper.numel(); ++i) {
-            std::cout << (mask_direct_upper.flatten()[i].item<bool>() ? "T" : "F") << " ";
-        }
-        std::cout << std::endl;
-    }
     
     // Handle mask_both cases with direct line when valid
     lw = torch::where(mask_direct_lower, k_direct, lw);
@@ -508,50 +392,6 @@ void BoundedSigmoidNode::boundRelaxImpl(const torch::Tensor& input_lower, const 
     uw = torch::where(mask_pos, k_m, uw);
     ub = torch::where(mask_pos, y_m - k_m * m, ub);
     
-    // DEBUG: Print final relaxation coefficients
-    if (debug_sigmoid && input_lower.numel() <= 10) {
-        std::cout << "  Final lw (lower slope): ";
-        auto lw_flat = lw.flatten();
-        for (int i = 0; i < lw_flat.numel(); ++i) {
-            if (lw_flat.dtype() == torch::kFloat64) {
-                std::cout << lw_flat[i].item<double>() << " ";
-            } else {
-                std::cout << lw_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << "  Final lb (lower bias): ";
-        auto lb_flat = lb.flatten();
-        for (int i = 0; i < lb_flat.numel(); ++i) {
-            if (lb_flat.dtype() == torch::kFloat64) {
-                std::cout << lb_flat[i].item<double>() << " ";
-            } else {
-                std::cout << lb_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << "  Final uw (upper slope): ";
-        auto uw_flat = uw.flatten();
-        for (int i = 0; i < uw_flat.numel(); ++i) {
-            if (uw_flat.dtype() == torch::kFloat64) {
-                std::cout << uw_flat[i].item<double>() << " ";
-            } else {
-                std::cout << uw_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << "  Final ub (upper bias): ";
-        auto ub_flat = ub.flatten();
-        for (int i = 0; i < ub_flat.numel(); ++i) {
-            if (ub_flat.dtype() == torch::kFloat64) {
-                std::cout << ub_flat[i].item<double>() << " ";
-            } else {
-                std::cout << ub_flat[i].item<float>() << " ";
-            }
-        }
-        std::cout << std::endl;
-        std::cout << std::defaultfloat;
-    }
 }
 
 // Unified backward relaxation method (following auto_LiRPA approach)

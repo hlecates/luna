@@ -2,8 +2,6 @@
 #include "BoundedConcatNode.h"
 #include <torch/torch.h>
 #include <cmath>
-#include <fstream>
-#include <chrono>
 
 namespace NLR {
 
@@ -18,58 +16,16 @@ torch::Tensor BoundedConcatNode::forward(const torch::Tensor& input) {
 }
 
 torch::Tensor BoundedConcatNode::forward(const std::vector<torch::Tensor>& inputs) {
-    // #region agent log
-    { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:18\",\"message\":\"forward entry\",\"data\":{\"num_inputs\":" << inputs.size() << ",\"axis\":" << _axis << ",\"node_name\":\"" << _nodeName.ascii() << "\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"FORWARD\"}\n"; }
-    // #endregion
-    
-    std::cerr << "[BoundedConcatNode::forward] Called with " << inputs.size() << " inputs" << std::endl;
-    
     if (inputs.empty()) {
         throw std::runtime_error("BoundedConcatNode::forward - no inputs provided");
     }
     
     if (inputs.size() == 1) {
-        std::cerr << "[BoundedConcatNode::forward] Single input, returning as-is" << std::endl;
         return inputs[0];
-    }
-    
-    // Print input shapes
-    for (size_t i = 0; i < inputs.size(); ++i) {
-        std::cerr << "[BoundedConcatNode::forward] Input " << i << " shape: [";
-        std::string shape_str = "[";
-        for (int j = 0; j < inputs[i].dim(); ++j) {
-            std::cerr << inputs[i].size(j);
-            shape_str += std::to_string(inputs[i].size(j));
-            if (j < inputs[i].dim() - 1) {
-                std::cerr << ", ";
-                shape_str += ",";
-            }
-        }
-        std::cerr << "]" << std::endl;
-        shape_str += "]";
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:34\",\"message\":\"input tensor shape\",\"data\":{\"input_idx\":" << i << ",\"shape\":\"" << shape_str << "\",\"ndim\":" << inputs[i].dim() << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"FORWARD\"}\n"; }
-        // #endregion
     }
     
     // Concatenate all inputs along the specified axis
     torch::Tensor result = torch::cat(inputs, _axis);
-    std::cerr << "[BoundedConcatNode::forward] Output shape: [";
-    std::string output_shape_str = "[";
-    for (int j = 0; j < result.dim(); ++j) {
-        std::cerr << result.size(j);
-        output_shape_str += std::to_string(result.size(j));
-        if (j < result.dim() - 1) {
-            std::cerr << ", ";
-            output_shape_str += ",";
-        }
-    }
-    std::cerr << "]" << std::endl;
-    output_shape_str += "]";
-    // #region agent log
-    { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:50\",\"message\":\"forward output\",\"data\":{\"output_shape\":\"" << output_shape_str << "\",\"output_ndim\":" << result.dim() << ",\"_input_size\":" << _input_size << ",\"_output_size\":" << _output_size << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"FORWARD\"}\n"; }
-    // #endregion
-    
     return result;
 }
 
@@ -190,10 +146,6 @@ void BoundedConcatNode::boundBackward(
 BoundedTensor<torch::Tensor> BoundedConcatNode::computeIntervalBoundPropagation(
     const Vector<BoundedTensor<torch::Tensor>>& inputBounds) {
     
-    // #region agent log
-    { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:163\",\"message\":\"IBP entry\",\"data\":{\"numInputBounds\":" << inputBounds.size() << ",\"expected_numInputs\":" << _numInputs << ",\"axis\":" << _axis << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"IBP_ENTRY\"}\n"; }
-    // #endregion
-    
     if (inputBounds.size() != _numInputs) {
         throw std::runtime_error("BoundedConcatNode: IBP input count mismatch");
     }
@@ -223,10 +175,6 @@ BoundedTensor<torch::Tensor> BoundedConcatNode::computeIntervalBoundPropagation(
     if (!lower_bounds.empty()) {
         int64_t ndim = lower_bounds[0].dim();
         
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:194\",\"message\":\"before axis adjustment\",\"data\":{\"original_axis\":" << _axis << ",\"ndim\":" << ndim << ",\"axis_negative\":" << (axis < 0 ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A\"}\n"; }
-        // #endregion
-        
         // Make axis non-negative
         if (axis < 0) {
             axis += ndim;
@@ -238,22 +186,8 @@ BoundedTensor<torch::Tensor> BoundedConcatNode::computeIntervalBoundPropagation(
             axis = axis - 1;
         }
         
-        // #region agent log
-        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:207\",\"message\":\"after axis adjustment\",\"data\":{\"adjusted_axis\":" << axis << ",\"ndim\":" << ndim << ",\"axis_in_bounds\":" << (axis >= 0 && axis < ndim ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A\"}\n"; }
-        // #endregion
-        
         // Ensure axis is valid after adjustment
         if (axis < 0 || axis >= ndim) {
-            std::cerr << "[BoundedConcatNode] Error: _axis=" << _axis << " (adjusted=" << axis 
-                      << "), ndim=" << ndim << ", tensor shape: [";
-            for (int i = 0; i < lower_bounds[0].dim(); ++i) {
-                std::cerr << lower_bounds[0].size(i);
-                if (i < lower_bounds[0].dim() - 1) std::cerr << ", ";
-            }
-            std::cerr << "]" << std::endl;
-            // #region agent log
-            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:219\",\"message\":\"ERROR: axis out of range\",\"data\":{\"original_axis\":" << _axis << ",\"adjusted_axis\":" << axis << ",\"ndim\":" << ndim << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A\"}\n"; }
-            // #endregion
             throw std::runtime_error("BoundedConcatNode: axis out of range");
         }
     }
@@ -261,10 +195,6 @@ BoundedTensor<torch::Tensor> BoundedConcatNode::computeIntervalBoundPropagation(
     // Concatenate bounds along the specified axis
     torch::Tensor concat_lower = torch::cat(lower_bounds, axis);
     torch::Tensor concat_upper = torch::cat(upper_bounds, axis);
-    
-    // #region agent log
-    { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedConcatNode.cpp:231\",\"message\":\"IBP exit success\",\"data\":{\"concat_axis\":" << axis << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"IBP_EXIT\"}\n"; }
-    // #endregion
     
     return BoundedTensor<torch::Tensor>(concat_lower, concat_upper);
 }

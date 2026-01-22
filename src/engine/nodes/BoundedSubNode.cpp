@@ -21,7 +21,6 @@ torch::Tensor BoundedSubNode::forward(const torch::Tensor& input) {
             return _constantValue - input;
         }
     }
-    std::cerr << "[BoundedSubNode] Warning: forward() called with single input and no constant. Returning input unchanged." << std::endl;
     return input;
 }
 

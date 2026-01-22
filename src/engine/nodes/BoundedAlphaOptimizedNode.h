@@ -96,9 +96,7 @@ protected:
 private:
     // Utility methods
     void log(const String& message) {
-        if (LirpaConfiguration::NETWORK_LEVEL_REASONER_LOGGING) {
-            printf("BoundedAlphaOptimizeNode: %s\n", message.ascii());
-        }
+        (void)message;
     }
 };
 

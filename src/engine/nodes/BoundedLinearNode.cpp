@@ -1,8 +1,5 @@
 // Marabou/src/nlr/bounded_modules/BoundedLinearNode.cpp
 #include "BoundedLinearNode.h"
-#include <iomanip>
-#include <fstream>
-#include <chrono>
 
 namespace NLR {
 
@@ -27,15 +24,10 @@ NLR::BoundedLinearNode::BoundedLinearNode(const torch::nn::Linear& linearModule,
         if (!weight.requires_grad() || !weight.is_contiguous() || weight.dtype() != torch::kFloat32) {
             weightNeedsFix = true;
             if (!weight.requires_grad()) {
-                printf("[WARNING] BoundedLinearNode: Weight tensor does not have requires_grad=True\n");
-                printf("[WARNING] This will prevent Alpha-CROWN optimization from working correctly.\n");
             }
             if (!weight.is_contiguous()) {
-                printf("[WARNING] BoundedLinearNode: Weight tensor is not contiguous.\n");
             }
             if (weight.dtype() != torch::kFloat32) {
-                printf("[WARNING] BoundedLinearNode: Weight tensor dtype is %s, expected Float32.\n",
-                       torch::toString(weight.dtype()).c_str());
             }
         }
         
@@ -43,7 +35,6 @@ NLR::BoundedLinearNode::BoundedLinearNode(const torch::nn::Linear& linearModule,
         // NOTE: Do NOT use detach() as it breaks the computation graph needed for Alpha-CROWN
         if (weightNeedsFix) {
             _linearModule->weight = weight.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network weights are constants;
-            printf("[INFO] BoundedLinearNode: Fixed weight tensor properties (Float32, contiguous, requires_grad=True)\n");
         }
 
         // Similar checks and fixes for bias if it exists
@@ -53,14 +44,10 @@ NLR::BoundedLinearNode::BoundedLinearNode(const torch::nn::Linear& linearModule,
             if (!bias.requires_grad() || !bias.is_contiguous() || bias.dtype() != torch::kFloat32) {
                 biasNeedsFix = true;
                 if (!bias.requires_grad()) {
-                    printf("[WARNING] BoundedLinearNode: Bias tensor does not have requires_grad=True\n");
                 }
                 if (!bias.is_contiguous()) {
-                    printf("[WARNING] BoundedLinearNode: Bias tensor is not contiguous.\n");
                 }
                 if (bias.dtype() != torch::kFloat32) {
-                    printf("[WARNING] BoundedLinearNode: Bias tensor dtype is %s, expected Float32.\n",
-                           torch::toString(bias.dtype()).c_str());
                 }
             }
             
@@ -68,7 +55,6 @@ NLR::BoundedLinearNode::BoundedLinearNode(const torch::nn::Linear& linearModule,
             // NOTE: Do NOT use detach() as it breaks the computation graph needed for Alpha-CROWN
             if (biasNeedsFix) {
                 _linearModule->bias = bias.contiguous().to(torch::kFloat32).requires_grad_(false);  // Network biases are constants;
-                printf("[INFO] BoundedLinearNode: Fixed bias tensor properties (Float32, contiguous, requires_grad=True)\n");
             }
         }
     }
@@ -258,23 +244,6 @@ BoundedTensor<torch::Tensor> BoundedLinearNode::computeIntervalBoundPropagation(
     const auto& inputBoundsPair = inputBounds[0];
     torch::Tensor inputLowerBound = inputBoundsPair.lower().to(torch::kFloat32);
     torch::Tensor inputUpperBound = inputBoundsPair.upper().to(torch::kFloat32);
-    
-    // #region agent log
-    auto log_weight = _linearModule->weight;
-    std::string input_shape_str = "[";
-    for (int i = 0; i < inputLowerBound.dim(); ++i) {
-        input_shape_str += std::to_string(inputLowerBound.size(i));
-        if (i < inputLowerBound.dim() - 1) input_shape_str += ",";
-    }
-    input_shape_str += "]";
-    std::string weight_shape_str = "[";
-    for (int i = 0; i < log_weight.dim(); ++i) {
-        weight_shape_str += std::to_string(log_weight.size(i));
-        if (i < log_weight.dim() - 1) weight_shape_str += ",";
-    }
-    weight_shape_str += "]";
-    { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"BoundedLinearNode.cpp:253\",\"message\":\"Linear IBP entry\",\"data\":{\"node_name\":\"" << _nodeName.ascii() << "\",\"node_idx\":" << _nodeIndex << ",\"input_shape\":\"" << input_shape_str << "\",\"weight_shape\":\"" << weight_shape_str << "\",\"_input_size\":" << _input_size << ",\"_output_size\":" << _output_size << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"LINEAR_IBP\"}\n"; }
-    // #endregion
     
     // Set input size from input bounds if not already set
     if (_input_size == 0 && inputLowerBound.defined()) {

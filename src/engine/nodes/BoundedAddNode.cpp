@@ -1,7 +1,4 @@
 #include "BoundedAddNode.h"
-#include <iostream>
-#include <fstream>
-#include <sstream>
 
 namespace NLR {
 
@@ -123,15 +120,6 @@ torch::Tensor BoundedAddNode::broadcast_backward(const torch::Tensor& last_A, co
     }
 
     if (spec_offset == 1 && A.dim() < 3) return A;
-    {
-        std::cout << "[ADD-BCAST] nodeIndex=" << _nodeIndex
-                  << " name=" << _nodeName.ascii()
-                  << " A.shape=" << A.sizes()
-                  << " operand.shape=" << x.sizes()
-                  << " spec_offset=" << spec_offset
-                  << " payload_start=" << ((spec_offset == 1) ? 2 : 1)
-                  << std::endl;
-    }
 
     // Reduce extra dims in A if needed (dims that exist in A but not in operand).
     // Matrix-like: payload begins at dim=2; elementwise: payload begins at dim=1.
@@ -158,21 +146,7 @@ torch::Tensor BoundedAddNode::broadcast_backward(const torch::Tensor& last_A, co
                 sum_dims.push_back(payload_start + i);
             }
             if (!sum_dims.empty()) {
-                // Debug: log before sum
-                {
-                    std::cout << "[ADD-BCAST-SUM] Before sum: A.shape=" << A.sizes() 
-                              << " sum_dims=[";
-                    for (size_t i = 0; i < sum_dims.size(); ++i) {
-                        if (i > 0) std::cout << ", ";
-                        std::cout << sum_dims[i];
-                    }
-                    std::cout << "]" << std::endl;
-                }
                 A = A.sum(sum_dims);
-                // Debug: log after sum
-                {
-                    std::cout << "[ADD-BCAST-SUM] After sum: A.shape=" << A.sizes() << std::endl;
-                }
             }
         }
     }
@@ -201,13 +175,6 @@ torch::Tensor BoundedAddNode::broadcast_backward(const torch::Tensor& last_A, co
         A = A.sum(keep_dims, /*keepdim=*/true);
     }
 
-    {
-        std::cout << "[ADD-BCAST-OUT] nodeIndex=" << _nodeIndex
-                  << " name=" << _nodeName.ascii()
-                  << " A.out.shape=" << A.sizes()
-                  << std::endl;
-    }
-
     return A;
 }
 
@@ -219,18 +186,6 @@ void BoundedAddNode::boundBackward(
     torch::Tensor& lbias,
     torch::Tensor& ubias) {
 
-    // Debug: Log input A matrix shape
-    if (last_lA.isTensor()) {
-        torch::Tensor A_in = last_lA.asTensor();
-        std::cout << "[BoundedAddNode::boundBackward] Node " << _nodeIndex 
-                  << " (" << _nodeName.ascii() << ") input lA shape: [";
-        for (int64_t i = 0; i < A_in.dim(); ++i) {
-            if (i > 0) std::cout << ", ";
-            std::cout << A_in.size(i);
-        }
-        std::cout << "]" << std::endl;
-    }
-
     // For Add node: the backward bound propagation simply passes through the A matrices
     // Since d(x+y)/dx = 1 and d(x+y)/dy = 1
 
@@ -241,14 +196,6 @@ void BoundedAddNode::boundBackward(
         if (!last_A.defined()) return BoundA();
         if (last_A.isTensor()) {
             torch::Tensor A = broadcast_backward(last_A.asTensor(), in);
-            // Debug: Log output A matrix shape
-            std::cout << "[BoundedAddNode::boundBackward] Node " << _nodeIndex 
-                      << " (" << _nodeName.ascii() << ") output A shape after broadcast: [";
-            for (int64_t i = 0; i < A.dim(); ++i) {
-                if (i > 0) std::cout << ", ";
-                std::cout << A.size(i);
-            }
-            std::cout << "]" << std::endl;
             return BoundA(A);
         } else {
             // Patches: broadcasting is not supported here; handled at the call sites.

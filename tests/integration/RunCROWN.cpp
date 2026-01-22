@@ -22,7 +22,7 @@ using Variable = unsigned;
 
 NLR::TorchModel* createDeepPolyModel() {
     std::cout << "Creating DeepPoly network model..." << std::endl;
-    
+
     std::vector<std::shared_ptr<NLR::BoundedTorchNode>> nodes;
     std::vector<std::vector<Variable>> marabouVars;
     std::vector<unsigned> inputIndices;
@@ -48,7 +48,7 @@ NLR::TorchModel* createDeepPolyModel() {
 
     std::cout << "Linear1 weight:\n" << linear1->weight << std::endl;
     std::cout << "Linear1 bias:\n" << linear1->bias << std::endl;
-    
+
     // Create first ReLU activation
     torch::nn::ReLU relu1(torch::nn::ReLUOptions{});
     auto reluNode1 = std::make_shared<NLR::BoundedReLUNode>(relu1, "relu1");
@@ -66,7 +66,7 @@ NLR::TorchModel* createDeepPolyModel() {
 
     std::cout << "Linear2 weight:\n" << linear2->weight << std::endl;
     std::cout << "Linear2 bias:\n" << linear2->bias << std::endl;
-    
+
     // Create second ReLU activation
     torch::nn::ReLU relu2(torch::nn::ReLUOptions{});
     auto reluNode2 = std::make_shared<NLR::BoundedReLUNode>(relu2, "relu2");
@@ -84,7 +84,7 @@ NLR::TorchModel* createDeepPolyModel() {
 
     std::cout << "Linear3 weight:\n" << linear3->weight << std::endl;
     std::cout << "Linear3 bias:\n" << linear3->bias << std::endl;
-    
+
     // Set up dependencies: input -> linear1 -> relu1 -> linear2 -> relu2 -> linear3
     std::vector<unsigned> inputDeps;  // Input has no dependencies
     dependencies[0] = inputDeps;
@@ -176,7 +176,7 @@ NLR::TorchModel* createDeepPolyModel() {
     
     linearNode3->setInputSize(2);
     linearNode3->setOutputSize(2);
-    
+
     std::cout << "DeepPoly model created with " << nodes.size() << " nodes:" << std::endl;
     std::cout << "  - Input node (2 neurons)" << std::endl;
     std::cout << "  - Linear1 node (2->2 neurons)" << std::endl;
@@ -254,13 +254,13 @@ int main(int argc, char** argv) {
     std::cout << "==========================================" << std::endl;
     std::cout << "DeepPoly Network CROWN Analysis" << std::endl;
     std::cout << "==========================================" << std::endl;
-    
+
     // Parse command line arguments for configuration
     LirpaConfiguration::parseArgs(argc, argv);
     
     // Mode selection: default standard CROWN (layer-by-layer intermediates via CROWN). Pass "--crown-ibp" to use CROWN-IBP.
     std::cout << "Mode: " << (LirpaConfiguration::USE_STANDARD_CROWN ? "Standard CROWN" : "CROWN-IBP") << std::endl;
-    
+
     try {
         // Step 1: Create DeepPoly model
         NLR::TorchModel* model = createDeepPolyModel();
@@ -273,9 +273,9 @@ int main(int argc, char** argv) {
         
         BoundedTensor<torch::Tensor> inputBounds(lowerBounds, upperBounds);
         model->setInputBounds(inputBounds);
-        
+
         std::cout << "Input bounds set: [-1.0, 1.0] for all " << inputSize << " inputs" << std::endl;
-        
+
         // Step 3: Create CROWN analysis and run it
         std::cout << "\nRunning CROWN analysis..." << std::endl;
         NLR::CROWNAnalysis crownAnalysis(model);
@@ -325,11 +325,11 @@ int main(int argc, char** argv) {
         
         // Cleanup
         delete model;
-        
+
         std::cout << "\n==========================================" << std::endl;
         std::cout << "DeepPoly CROWN Analysis Completed" << std::endl;
         std::cout << "==========================================" << std::endl;
-        
+
         return 0;
         
     } catch (const std::exception& e) {

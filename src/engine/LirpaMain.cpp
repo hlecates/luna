@@ -3,6 +3,8 @@
 #include "TorchModel.h"
 #include "LirpaError.h"
 #include "configuration/LirpaConfiguration.h"
+#include "input_parsers/OutputConstraint.h"
+#include "input_parsers/VnnLibInputParser.h"
 #include <torch/torch.h>
 #include <iostream>
 #include <iomanip>
@@ -29,6 +31,90 @@ static void printBounds(const torch::Tensor& lower, const torch::Tensor& upper) 
     }
     std::cout << std::endl;
     std::cout << std::defaultfloat;
+}
+
+enum class PropertyStatus {
+    Verified,
+    Violated,
+    Unknown
+};
+
+static PropertyStatus evaluatePropertyStatus(
+    const NLR::OutputConstraintSet& constraints,
+    const torch::Tensor& lowerBounds,
+    const torch::Tensor& upperBounds,
+    std::string& detail) {
+    if (!constraints.hasConstraints()) {
+        detail = "no output constraints found in VNN-LIB";
+        return PropertyStatus::Unknown;
+    }
+
+    if (!lowerBounds.defined() || !upperBounds.defined()) {
+        detail = "bounds are undefined";
+        return PropertyStatus::Unknown;
+    }
+
+    torch::Tensor lb = lowerBounds.flatten();
+    torch::Tensor ub = upperBounds.flatten();
+
+    if (lb.numel() == 0 || ub.numel() == 0) {
+        detail = "bounds are empty";
+        return PropertyStatus::Unknown;
+    }
+
+    NLR::CMatrixResult cMatrix = constraints.toCMatrix();
+    torch::Tensor thresholds = cMatrix.thresholds.to(ub.device());
+
+    if (lb.numel() != thresholds.numel() || ub.numel() != thresholds.numel()) {
+        detail = "bounds/threshold size mismatch";
+        return PropertyStatus::Unknown;
+    }
+
+    if (cMatrix.hasORBranches) {
+        Vector<NLR::BranchResult> branchResults =
+            NLR::OutputConstraintSet::evaluateORBranches(lb, ub, thresholds,
+                                                         cMatrix.branchMapping,
+                                                         cMatrix.branchSizes);
+        bool anyVerified = false;
+        bool allRefuted = true;
+
+        for (const auto& branch : branchResults) {
+            if (branch.verified) {
+                anyVerified = true;
+            }
+            if (!branch.refuted) {
+                allRefuted = false;
+            }
+        }
+
+        if (anyVerified) {
+            detail = "at least one OR-branch verified";
+            return PropertyStatus::Verified;
+        }
+        if (allRefuted) {
+            detail = "all OR-branches refuted";
+            return PropertyStatus::Violated;
+        }
+        detail = "no OR-branch verified or refuted";
+        return PropertyStatus::Unknown;
+    }
+
+    torch::Tensor upperDiff = ub - thresholds;
+    torch::Tensor lowerDiff = lb - thresholds;
+    bool allVerified = (upperDiff <= 0).all().item<bool>();
+    bool anyViolated = (lowerDiff > 0).any().item<bool>();
+
+    if (allVerified) {
+        detail = "all constraints satisfied by upper bounds";
+        return PropertyStatus::Verified;
+    }
+    if (anyViolated) {
+        detail = "some constraint violated by lower bounds";
+        return PropertyStatus::Violated;
+    }
+
+    detail = "constraints inconclusive";
+    return PropertyStatus::Unknown;
 }
 
 void printUsage(const char* programName) {
@@ -228,13 +314,47 @@ int lirpaMain(int argc, char* argv[]) {
         }
 
         // Step 5: Output the bounds
-
-        // Step 4: Output the bounds
         if (result.lower().defined() && result.upper().defined()) {
             printBounds(result.lower(), result.upper());
         } else {
             std::cerr << "ERROR: Bounds are undefined" << std::endl;
             return 1;
+        }
+
+        // Step 6: Verify property if constraints exist in VNN-LIB
+        PropertyStatus status = PropertyStatus::Unknown;
+        std::string statusDetail;
+        try {
+            NLR::OutputConstraintSet outputConstraints =
+                VnnLibInputParser::parseOutputConstraints(
+                    String(vnnlibFilePath.c_str()),
+                    torchModel->getOutputSize());
+            status = evaluatePropertyStatus(outputConstraints,
+                                            result.lower(),
+                                            result.upper(),
+                                            statusDetail);
+        } catch (const std::exception& e) {
+            statusDetail = std::string("failed to parse output constraints: ") + e.what();
+            status = PropertyStatus::Unknown;
+        }
+
+        std::string statusLabel;
+        switch (status) {
+            case PropertyStatus::Verified:
+                statusLabel = "VERIFIED";
+                break;
+            case PropertyStatus::Violated:
+                statusLabel = "VIOLATED";
+                break;
+            case PropertyStatus::Unknown:
+            default:
+                statusLabel = "UNKNOWN";
+                break;
+        }
+
+        std::cout << "\nProperty status: " << statusLabel << std::endl;
+        if (!statusDetail.empty()) {
+            std::cout << "Property details: " << statusDetail << std::endl;
         }
 
         return 0;
