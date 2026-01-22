@@ -1,0 +1,26 @@
+; Simple input-box constraints for toy_add_complex.onnx
+; Input has 3 real variables X_0..X_2. No output constraints.
+
+(declare-const X_0 Real)
+(declare-const X_1 Real)
+(declare-const X_2 Real)
+
+; Box bounds: X_i in [-1, 1]
+(assert (>= X_0 -1.0))
+(assert (<= X_0 1.0))
+(assert (>= X_1 -1.0))
+(assert (<= X_1 1.0))
+(assert (>= X_2 -1.0))
+(assert (<= X_2 1.0))
+
+
+
+
+
+
+
+
+
+
+
+

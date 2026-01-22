@@ -6,15 +6,16 @@
 #include "MString.h"
 #include "Vector.h"
 #include "onnx.proto3.pb.h"
-#include "BoundedTorchNode.h"
-#include "BoundedConstantNode.h"
-#include "BoundedInputNode.h"
-#include "BoundedLinearNode.h"
-#include "BoundedReLUNode.h"
-#include "BoundedIdentityNode.h"
-#include "BoundedReshapeNode.h"
-#include "BoundedFlattenNode.h"
-#include "BoundedSubNode.h"
+#include "../engine/nodes/BoundedTorchNode.h"
+#include "../engine/nodes/BoundedConstantNode.h"
+#include "../engine/nodes/BoundedInputNode.h"
+#include "../engine/nodes/BoundedLinearNode.h"
+#include "../engine/nodes/BoundedReLUNode.h"
+#include "../engine/nodes/BoundedIdentityNode.h"
+#include "../engine/nodes/BoundedReshapeNode.h"
+#include "../engine/nodes/BoundedFlattenNode.h"
+#include "../engine/nodes/BoundedSubNode.h"
+#include "../engine/nodes/BoundedBatchNormNode.h"
 
 // Undefine Warning macro to avoid conflict with PyTorch
 #ifdef Warning
@@ -124,6 +125,9 @@ namespace BoundedOperationConverter {
     std::shared_ptr<NLR::BoundedTorchNode> convertRelu(const onnx::NodeProto& node,
                                                      const Map<String, onnx::ValueInfoProto>& name_to_input,
                                                      const Map<String, onnx::TensorProto>& name_to_initializer);
+    std::shared_ptr<NLR::BoundedTorchNode> convertSigmoid(const onnx::NodeProto& node,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer);
     std::shared_ptr<NLR::BoundedTorchNode> convertIdentity(const onnx::NodeProto& node,
                                                          const Map<String, onnx::ValueInfoProto>& name_to_input,
                                                          const Map<String, onnx::TensorProto>& name_to_initializer);
@@ -140,7 +144,24 @@ namespace BoundedOperationConverter {
     std::shared_ptr<NLR::BoundedTorchNode> convertConv(const onnx::NodeProto& node,
                                                      const Map<String, torch::Tensor>& constants,
                                                      const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer,
+                                                     const Map<String, Vector<int>>& shape_metadata = Map<String, Vector<int>>());
+    std::shared_ptr<NLR::BoundedTorchNode> convertConvTranspose(const onnx::NodeProto& node,
+                                                     const Map<String, torch::Tensor>& constants,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
                                                      const Map<String, onnx::TensorProto>& name_to_initializer);
+    std::shared_ptr<NLR::BoundedTorchNode> convertBatchNormalization(const onnx::NodeProto& node,
+                                                     const Map<String, torch::Tensor>& constants,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer);
+    std::shared_ptr<NLR::BoundedTorchNode> convertConcat(const onnx::NodeProto& node,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer,
+                                                     const Map<String, Vector<int>>& shape_metadata);
+    std::shared_ptr<NLR::BoundedTorchNode> convertSlice(const onnx::NodeProto& node,
+                                                        const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                        const Map<String, onnx::TensorProto>& name_to_initializer,
+                                                        const Map<String, Vector<int>>& shape_metadata);
     std::shared_ptr<NLR::BoundedTorchNode> convertConstant(const torch::Tensor& value);
 }
 

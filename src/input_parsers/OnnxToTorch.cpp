@@ -14,22 +14,27 @@
  * Sub (element-wise)
  * Relu
  * Conv (2D Convolution)
+ * Dropout (treated as Identity during inference)
  */
 
 
 #include "OnnxToTorch.h"
-#include "../nlr/TorchModel.h"
-#include "../nlr/BoundedTorchNode.h"
-#include "../nlr/BoundedConstantNode.h"
-#include "../nlr/BoundedInputNode.h"
-#include "../nlr/BoundedLinearNode.h"
-#include "../nlr/BoundedReLUNode.h"
-#include "../nlr/BoundedIdentityNode.h"
-#include "../nlr/BoundedReshapeNode.h"
-#include "../nlr/BoundedSubNode.h"
-#include "../nlr/BoundedAddNode.h"
-#include "../nlr/BoundedConvNode.h"
-#include "../nlr/LirpaError.h"
+#include "../engine/TorchModel.h"
+#include "../engine/nodes/BoundedTorchNode.h"
+#include "../engine/nodes/BoundedConstantNode.h"
+#include "../engine/nodes/BoundedInputNode.h"
+#include "../engine/nodes/BoundedLinearNode.h"
+#include "../engine/nodes/BoundedReLUNode.h"
+#include "../engine/nodes/BoundedSigmoidNode.h"
+#include "../engine/nodes/BoundedIdentityNode.h"
+#include "../engine/nodes/BoundedReshapeNode.h"
+#include "../engine/nodes/BoundedSubNode.h"
+#include "../engine/nodes/BoundedAddNode.h"
+#include "../engine/nodes/BoundedConvNode.h"
+#include "../engine/nodes/BoundedConvTransposeNode.h"
+#include "../engine/nodes/BoundedConcatNode.h"
+#include "../engine/nodes/BoundedSliceNode.h"
+#include "../engine/LirpaError.h"
 #include "File.h"
 #include "MString.h"
 #include "Vector.h"
@@ -38,10 +43,12 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <cstdlib>
+#include <cstdio>
+#include <chrono>
 #include <torch/torch.h>
 #include <onnx.proto3.pb.h>
 
-#include "FloatUtils.h"
 #include "TensorUtils.h"
 
 #include <math.h>
@@ -307,6 +314,44 @@ OnnxToTorchParser::OnnxToTorchParser(const String &path) {
     // std::cerr << "[OnnxToTorchParser] Successfully parsed ONNX model with " << _onnx_model.graph().node_size() << " nodes" << std::endl;
     // std::cerr << "[OnnxToTorchParser] Model has " << _onnx_model.graph().initializer_size() << " initializers" << std::endl;
 
+    // Run ONNX shape inference using Python if no intermediate shapes are present
+    if (_onnx_model.graph().value_info_size() == 0) {
+        std::cerr << "[OnnxToTorchParser] No intermediate shape information found. Running Python ONNX shape inference..." << std::endl;
+        
+        // Create temporary output path
+        std::string temp_path = std::string(path.ascii()) + ".inferred.onnx";
+        
+        // Build Python command to run shape inference
+        std::string python_cmd = "python3 -c \"import onnx; from onnx import shape_inference; "
+                                "model = onnx.load('" + std::string(path.ascii()) + "'); "
+                                "inferred = shape_inference.infer_shapes(model); "
+                                "onnx.save(inferred, '" + temp_path + "')\" 2>/dev/null";
+        
+        int result = system(python_cmd.c_str());
+        if (result == 0) {
+            // Reload the inferred model
+            std::ifstream inferred_input(temp_path, std::ios::ate | std::ios::binary);
+            if (inferred_input.is_open()) {
+                std::streamsize inferred_size = inferred_input.tellg();
+                inferred_input.seekg(0, std::ios::beg);
+                std::vector<char> inferred_buffer(inferred_size);
+                inferred_input.read(inferred_buffer.data(), inferred_size);
+                
+                std::string inferred_string(inferred_buffer.data(), inferred_size);
+                if (_onnx_model.ParseFromString(inferred_string)) {
+                    std::cerr << "[OnnxToTorchParser] Shape inference completed successfully. value_info entries: "
+                              << _onnx_model.graph().value_info_size() << std::endl;
+                }
+                inferred_input.close();
+                
+                // Clean up temporary file
+                std::remove(temp_path.c_str());
+            }
+        } else {
+            std::cerr << "[OnnxToTorchParser] Warning: Python shape inference failed. Proceeding without intermediate shapes." << std::endl;
+        }
+    }
+
     // Debug: check raw_data for each initializer immediately after parsing (commented out)
     // for (const auto& init : _onnx_model.graph().initializer()) {
     //     if (init.name() == "1" || init.name() == "3") {  // Conv weights for CIFAR
@@ -350,6 +395,229 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
     for (const auto& node : _onnx_model.graph().node()) {
         for (int i = 0; i < node.output_size(); ++i) {
             name_to_node[node.output(i)] = node;
+        }
+    }
+    
+    // Extract shape metadata from ONNX value_info
+    // This includes shapes for intermediate tensors
+    Map<String, Vector<int>> shape_metadata;
+    
+    // Add input shapes
+    for (const auto& input : _onnx_model.graph().input()) {
+        if (input.type().tensor_type().has_shape()) {
+            const auto& shape = input.type().tensor_type().shape();
+            Vector<int> dims;
+            for (int i = 0; i < shape.dim_size(); ++i) {
+                if (shape.dim(i).has_dim_value()) {
+                    dims.append(static_cast<int>(shape.dim(i).dim_value()));
+                } else {
+                    // Dynamic dimension - use -1 as placeholder
+                    dims.append(-1);
+                }
+            }
+            if (!dims.empty()) {
+                shape_metadata[input.name()] = dims;
+                std::cout << "[OnnxToTorch] Input shape for " << input.name().c_str() << ": [";
+                for (unsigned i = 0; i < dims.size(); ++i) {
+                    std::cout << dims[i];
+                    if (i < dims.size() - 1) std::cout << ", ";
+                }
+                std::cout << "]" << std::endl;
+            }
+        }
+    }
+    
+    // Add output shapes
+    for (const auto& output : _onnx_model.graph().output()) {
+        if (output.type().tensor_type().has_shape()) {
+            const auto& shape = output.type().tensor_type().shape();
+            Vector<int> dims;
+            for (int i = 0; i < shape.dim_size(); ++i) {
+                if (shape.dim(i).has_dim_value()) {
+                    dims.append(static_cast<int>(shape.dim(i).dim_value()));
+                } else {
+                    dims.append(-1);
+                }
+            }
+            if (!dims.empty()) {
+                shape_metadata[output.name()] = dims;
+            }
+        }
+    }
+    
+    // FIRST PASS: Infer shapes for all operations
+    // This ensures Concat and other operations have access to all input shapes
+    std::cout << "[OnnxToTorch] Running shape inference pass..." << std::endl;
+    
+    // Iterate multiple times to handle dependencies
+    for (int pass = 0; pass < 3; ++pass) {
+        int shapes_added = 0;
+        
+        for (const auto& node : _onnx_model.graph().node()) {
+            if (node.output_size() > 0) {
+                String outputName = node.output(0);
+                
+                // Skip if already computed
+                if (shape_metadata.exists(outputName)) continue;
+                
+                Vector<int> output_shape;
+                
+                if (node.op_type() == "MatMul" || node.op_type() == "Gemm") {
+                    if (node.input_size() >= 2) {
+                        Vector<int> input0_shape = shape_metadata.exists(node.input(0)) ? 
+                                                   shape_metadata[node.input(0)] : Vector<int>();
+                        String weight_name = node.input(1);
+                        
+                        // Debug for /linear_weight/MatMul
+                        if (outputName.contains("linear_weight")) {
+                            std::cout << "[DEBUG] Processing " << outputName.ascii() << std::endl;
+                            std::cout << "  Input 0: " << node.input(0).c_str() << " has_shape=" 
+                                      << (shape_metadata.exists(node.input(0)) ? "yes" : "no") << std::endl;
+                            std::cout << "  Input 1: " << weight_name.ascii() << " is_init=" 
+                                      << (name_to_initializer.exists(weight_name) ? "yes" : "no") << std::endl;
+                        }
+                        
+                        if (!input0_shape.empty() && name_to_initializer.exists(weight_name)) {
+                            const auto& weight_tensor = name_to_initializer[weight_name];
+                            if (weight_tensor.dims_size() == 2) {
+                                int batch = input0_shape[0];
+                                int N = weight_tensor.dims(1);
+                                output_shape.append(batch);
+                                output_shape.append(N);
+                            }
+                        }
+                    }
+                } else if (node.op_type() == "Relu" || node.op_type() == "Sigmoid") {
+                    if (node.input_size() > 0 && shape_metadata.exists(node.input(0))) {
+                        output_shape = shape_metadata[node.input(0)];
+                    }
+                } else if (node.op_type() == "Slice") {
+                    // Slice operation - compute exact output shape
+                    if (node.input_size() > 0 && shape_metadata.exists(node.input(0))) {
+                        Vector<int> input_shape = shape_metadata[node.input(0)];
+                        output_shape = input_shape; // Start with input shape
+                        
+                        // Parse slice parameters
+                        // ONNX Slice opset >= 10: inputs are (data, starts, ends, axes?, steps?)
+                        // ONNX Slice opset < 10: attributes are (starts, ends, axes?)
+                        
+                        Vector<int64_t> starts, ends, axes, steps;
+                        
+                        // Try to get parameters from inputs (opset >= 10)
+                        if (node.input_size() >= 3) {
+                            // Get starts
+                            String starts_name = node.input(1);
+                            if (name_to_initializer.exists(starts_name)) {
+                                torch::Tensor starts_tensor = ConstantProcessor::processInitializer(name_to_initializer[starts_name]);
+                                for (int64_t i = 0; i < starts_tensor.numel(); ++i) {
+                                    starts.append(starts_tensor.flatten()[i].item<int64_t>());
+                                }
+                            }
+                            
+                            // Get ends
+                            String ends_name = node.input(2);
+                            if (name_to_initializer.exists(ends_name)) {
+                                torch::Tensor ends_tensor = ConstantProcessor::processInitializer(name_to_initializer[ends_name]);
+                                for (int64_t i = 0; i < ends_tensor.numel(); ++i) {
+                                    ends.append(ends_tensor.flatten()[i].item<int64_t>());
+                                }
+                            }
+                            
+                            // Get axes (optional)
+                            if (node.input_size() >= 4 && !node.input(3).empty()) {
+                                String axes_name = node.input(3);
+                                if (name_to_initializer.exists(axes_name)) {
+                                    torch::Tensor axes_tensor = ConstantProcessor::processInitializer(name_to_initializer[axes_name]);
+                                    for (int64_t i = 0; i < axes_tensor.numel(); ++i) {
+                                        axes.append(axes_tensor.flatten()[i].item<int64_t>());
+                                    }
+                                }
+                            }
+                            
+                            // Get steps (optional)
+                            if (node.input_size() >= 5 && !node.input(4).empty()) {
+                                String steps_name = node.input(4);
+                                if (name_to_initializer.exists(steps_name)) {
+                                    torch::Tensor steps_tensor = ConstantProcessor::processInitializer(name_to_initializer[steps_name]);
+                                    for (int64_t i = 0; i < steps_tensor.numel(); ++i) {
+                                        steps.append(steps_tensor.flatten()[i].item<int64_t>());
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If axes not specified, default to [0, 1, 2, ..., len(starts)-1]
+                        if (axes.empty() && !starts.empty()) {
+                            for (size_t i = 0; i < starts.size(); ++i) {
+                                axes.append(i);
+                            }
+                        }
+                        
+                        // If steps not specified, default to [1, 1, ...]
+                        if (steps.empty() && !starts.empty()) {
+                            for (size_t i = 0; i < starts.size(); ++i) {
+                                steps.append(1);
+                            }
+                        }
+                        
+                        // Compute output shape for each sliced axis
+                        for (size_t i = 0; i < axes.size() && i < starts.size() && i < ends.size(); ++i) {
+                            int axis = axes[i];
+                            if (axis < 0) axis += input_shape.size(); // Handle negative axes
+                            
+                            if (axis >= 0 && axis < (int)input_shape.size()) {
+                                int64_t start = starts[i];
+                                int64_t end = ends[i];
+                                int64_t step = i < steps.size() ? steps[i] : 1;
+                                int64_t dim_size = input_shape[axis];
+                                
+                                // Handle negative indices
+                                if (start < 0) start += dim_size;
+                                if (end < 0) end += dim_size;
+                                
+                                // Clamp to valid range
+                                start = std::max(int64_t(0), std::min(start, dim_size));
+                                end = std::max(int64_t(0), std::min(end, dim_size));
+                                
+                                // Compute sliced dimension size
+                                int64_t sliced_size = 0;
+                                if (step > 0 && end > start) {
+                                    sliced_size = (end - start + step - 1) / step;
+                                } else if (step < 0 && start > end) {
+                                    sliced_size = (start - end - step - 1) / (-step);
+                                }
+                                
+                                output_shape[axis] = std::max(int64_t(0), sliced_size);
+                            }
+                        }
+                    }
+                }
+                
+                if (!output_shape.empty()) {
+                    shape_metadata[outputName] = output_shape;
+                    shapes_added++;
+                }
+            }
+        }
+        
+        if (shapes_added == 0) break; // No progress, stop iterating
+    }
+    
+    // Add intermediate tensor shapes from value_info
+    for (const auto& value_info : _onnx_model.graph().value_info()) {
+        if (value_info.type().tensor_type().has_shape()) {
+            const auto& shape = value_info.type().tensor_type().shape();
+            Vector<int> dims;
+            for (int i = 0; i < shape.dim_size(); ++i) {
+                if (shape.dim(i).has_dim_value()) {
+                    dims.append(static_cast<int>(shape.dim(i).dim_value()));
+                } else {
+                    dims.append(-1);
+                }
+            }
+            if (!dims.empty()) {
+                shape_metadata[value_info.name()] = dims;
+            }
         }
     }
 
@@ -417,6 +685,14 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
             if (name_to_initializer.exists(inputName) && !constantsMap.exists(inputName)) {
                 torch::Tensor constant = ConstantProcessor::processInitializer(name_to_initializer[inputName]);
                 constantsMap[inputName] = constant;
+            }
+            // Also treat outputs of ONNX Constant nodes as constants (common for BN params).
+            if (name_to_node.exists(inputName) && !constantsMap.exists(inputName)) {
+                const auto& producer = name_to_node[inputName];
+                if (producer.op_type() == "Constant") {
+                    torch::Tensor constant = ConstantProcessor::processConstantNode(producer);
+                    constantsMap[inputName] = constant;
+                }
             }
         }
     }
@@ -548,6 +824,14 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                     }
                 }
                 // If both are constants, no dependencies (handled in convertAdd as constant folding)
+            } else if (node.op_type() == "BatchNormalization") {
+                // BatchNormalization params are embedded into the bounded node; only X is a dependency.
+                if (node.input_size() >= 1) {
+                    String xName = node.input(0);
+                    if (nameToIndex.exists(xName)) {
+                        deps.append(nameToIndex[xName]);
+                    }
+                }
             } else {
                 // Standard dependency handling for other nodes
                 for (int j = 0; j < node.input_size(); ++j) {
@@ -580,8 +864,10 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                     boundedNode = BoundedOperationConverter::convertMatMul(node, constantsMap, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Add") {
                     boundedNode = BoundedOperationConverter::convertAdd(node, constantsMap, name_to_input, name_to_initializer, nodes, nameToIndex);
-                } else if (node.op_type() == "Relu") {
+                } else if (node.op_type() == "Relu" || node.op_type() == "relu") {
                     boundedNode = BoundedOperationConverter::convertRelu(node, name_to_input, name_to_initializer);
+                } else if (node.op_type() == "Sigmoid" || node.op_type() == "sigmoid") {
+                    boundedNode = BoundedOperationConverter::convertSigmoid(node, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Reshape") {
                     boundedNode = BoundedOperationConverter::convertReshape(node, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Flatten") {
@@ -589,13 +875,87 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                 } else if (node.op_type() == "Sub") {
                     boundedNode = BoundedOperationConverter::convertSub(node, constantsMap, name_to_input, name_to_initializer);
                 } else if (node.op_type() == "Conv") {
-                    boundedNode = BoundedOperationConverter::convertConv(node, constantsMap, name_to_input, name_to_initializer);
+                    boundedNode = BoundedOperationConverter::convertConv(node, constantsMap, name_to_input, name_to_initializer, shape_metadata);
                     if (!boundedNode) {
                         std::cerr << "[ERROR] Conv conversion returned nullptr for node " << tensorName.ascii() << std::endl;
                         onnxToTorchBoundedModuleCreationError("Conv", "Conversion returned nullptr");
                     }
+                } else if (node.op_type() == "ConvTranspose") {
+                    boundedNode = BoundedOperationConverter::convertConvTranspose(node, constantsMap, name_to_input, name_to_initializer);
+                    if (!boundedNode) {
+                        std::cerr << "[ERROR] ConvTranspose conversion returned nullptr for node " << tensorName.ascii() << std::endl;
+                        onnxToTorchBoundedModuleCreationError("ConvTranspose", "Conversion returned nullptr");
+                    }
+                } else if (node.op_type() == "BatchNormalization") {
+                    boundedNode = BoundedOperationConverter::convertBatchNormalization(node, constantsMap, name_to_input, name_to_initializer);
+                } else if (node.op_type() == "Slice") {
+                    boundedNode = BoundedOperationConverter::convertSlice(node, name_to_input, name_to_initializer, shape_metadata);
+                    if (!boundedNode) {
+                        std::cerr << "[ERROR] Slice conversion returned nullptr for node " << tensorName.ascii() << std::endl;
+                        onnxToTorchBoundedModuleCreationError("Slice", "Conversion returned nullptr");
+                    }
+                } else if (node.op_type() == "Gather") {
+                    // TODO: Implement proper BoundedGatherNode with correct bound propagation
+                    // For now, treat as Identity (conservative but sound)
+                    std::cerr << "[INFO] Gather operation approximated as Identity (conservative bounds)" << std::endl;
+                    boundedNode = BoundedOperationConverter::convertIdentity(node, name_to_input, name_to_initializer);
+                } else if (node.op_type() == "Cast") {
+                    // Cast operation - bounds pass through unchanged (data type conversion doesn't affect bounds)
+                    std::cerr << "[INFO] Cast operation treated as Identity (bounds preserved)" << std::endl;
+                    boundedNode = BoundedOperationConverter::convertIdentity(node, name_to_input, name_to_initializer);
+                } else if (node.op_type() == "Dropout") {
+                    // Dropout is disabled during inference - acts as identity pass-through
+                    std::cerr << "[INFO] Dropout operation treated as Identity (inference mode)" << std::endl;
+                    boundedNode = BoundedOperationConverter::convertIdentity(node, name_to_input, name_to_initializer);
+                } else if (node.op_type() == "Concat") {
+                    boundedNode = BoundedOperationConverter::convertConcat(node, name_to_input, name_to_initializer, shape_metadata);
+                    if (!boundedNode) {
+                        std::cerr << "[ERROR] Concat conversion returned nullptr for node " << tensorName.ascii() << std::endl;
+                        onnxToTorchBoundedModuleCreationError("Concat", "Conversion returned nullptr");
+                    }
                 } else {
                     onnxToTorchUnsupportedOperationError(node);
+                }
+                
+                // Infer and store output shape for this node BEFORE setting metadata
+                if (node.output_size() > 0) {
+                    String outputName = node.output(0);
+                    Vector<int> output_shape;
+                    
+                    if (node.op_type() == "MatMul" || node.op_type() == "Gemm") {
+                        // MatMul: [M, K] x [K, N] -> [M, N]
+                        if (node.input_size() >= 2) {
+                            Vector<int> input0_shape = shape_metadata.exists(node.input(0)) ? 
+                                                       shape_metadata[node.input(0)] : Vector<int>();
+                            String weight_name = node.input(1);
+                            
+                            // Get weight shape from initializer
+                            if (name_to_initializer.exists(weight_name)) {
+                                const auto& weight_tensor = name_to_initializer[weight_name];
+                                if (weight_tensor.dims_size() == 2 && !input0_shape.empty()) {
+                                    // Input: [batch, K], Weight: [K, N] -> Output: [batch, N]
+                                    int batch = input0_shape[0];
+                                    int N = weight_tensor.dims(1);
+                                    output_shape.append(batch);
+                                    output_shape.append(N);
+                                    
+                                    std::cout << "[ShapeInference] " << node.op_type().c_str() 
+                                              << " output " << outputName.ascii() << ": [" 
+                                              << batch << ", " << N << "]" << std::endl;
+                                }
+                            }
+                        }
+                    } else if (node.op_type() == "Relu" || node.op_type() == "Sigmoid") {
+                        // Activation functions preserve shape
+                        if (node.input_size() > 0 && shape_metadata.exists(node.input(0))) {
+                            output_shape = shape_metadata[node.input(0)];
+                        }
+                    }
+                    
+                    // Store computed output shape
+                    if (!output_shape.empty()) {
+                        shape_metadata[outputName] = output_shape;
+                    }
                 }
                 
                 // Set node metadata
@@ -626,13 +986,17 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
         if (!node) continue;
 
         // Process nodes that need size inference
-        if ((node->getNodeType() == NLR::NodeType::RELU ||
+            if ((node->getNodeType() == NLR::NodeType::RELU ||
              node->getNodeType() == NLR::NodeType::IDENTITY ||
              node->getNodeType() == NLR::NodeType::RESHAPE ||
              node->getNodeType() == NLR::NodeType::FLATTEN ||
              node->getNodeType() == NLR::NodeType::ADD ||
              node->getNodeType() == NLR::NodeType::SUB ||
-             node->getNodeType() == NLR::NodeType::CONV) &&
+                 node->getNodeType() == NLR::NodeType::CONV ||
+                 node->getNodeType() == NLR::NodeType::CONVTRANSPOSE ||
+                 node->getNodeType() == NLR::NodeType::BATCHNORM ||
+                 node->getNodeType() == NLR::NodeType::LINEAR ||
+                 node->getNodeType() == NLR::NodeType::CONCAT) &&
             node->getInputSize() == 0) {
 
             // Get the input dependency
@@ -654,10 +1018,36 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                                 node->setInputSize(inferredSize);
                                 node->setOutputSize(2); // Fallback placeholder
                             }
-                        } else {
-                            // For dimension-preserving nodes
+                        } else if (node->getNodeType() == NLR::NodeType::CONVTRANSPOSE) {
+                            // For ConvTranspose nodes, we need special handling
+                            auto convtNode = std::dynamic_pointer_cast<NLR::BoundedConvTransposeNode>(node);
+                            if (convtNode) {
+                                unsigned outputSize = convtNode->inferOutputSize(inferredSize);
+                                node->setInputSize(inferredSize);
+                                node->setOutputSize(outputSize);
+                                // std::cout << "[OnnxToTorch] Inferred ConvTranspose size for node " << i 
+                                //           << ": input=" << inferredSize << " -> output=" << outputSize << std::endl;
+                            } else {
+                                node->setInputSize(inferredSize);
+                                node->setOutputSize(2); // Fallback placeholder
+                            }
+                        } else if (node->getNodeType() == NLR::NodeType::LINEAR) {
+                            // For Linear/MatMul nodes, just update the input size
+                            // The output size should already be set during node creation based on weight dimensions
                             node->setInputSize(inferredSize);
-                            node->setOutputSize(inferredSize);
+                            // Output size was already set in convertMatMul/convertGemm, don't override it
+                        } else if (node->getNodeType() == NLR::NodeType::CONCAT) {
+                            // For Concat nodes, output size should already be set during conversion
+                            // Just update input size
+                            node->setInputSize(inferredSize);
+                            // Output size was set in convertConcat, don't override it
+                        } else {
+                            // For dimension-preserving nodes (RELU, IDENTITY/SLICE, RESHAPE, etc.)
+                            node->setInputSize(inferredSize);
+                            // For IDENTITY nodes that might be Slice, preserve output size if already set
+                            if (node->getOutputSize() == 0) {
+                                node->setOutputSize(inferredSize);
+                            }
                         }
 //                         std::cout << "[OnnxToTorch] Inferred size for node " << i
 //                                   << " from input node " << inputIdx
@@ -940,9 +1330,29 @@ torch::Tensor processInitializer(const onnx::TensorProto& tensor) {
             // Fall back to float_data format
             // std::cerr << "      [ConstantProcessor] Using float_data with " << tensor.float_data_size() << " elements" << std::endl;
             if (tensor.float_data_size() == 0) {
-                // std::cerr << "      [ConstantProcessor] ERROR: No data found for tensor " << tensor.name() << std::endl;
-                // This is now an error condition - handle it properly
-                onnxToTorchTensorConversionError(tensor.name(), "No data found in tensor (neither raw_data nor float_data)");
+                // Check if this is an empty tensor (0 elements total)
+                int64_t total_elements = 1;
+                for (int i = 0; i < tensor.dims_size(); ++i) {
+                    total_elements *= tensor.dims(i);
+                }
+                
+                // If the shape specifies 0 elements, create an empty tensor
+                if (total_elements == 0) {
+                    std::cerr << "      [ConstantProcessor] Creating empty tensor '" << tensor.name() 
+                              << "' with shape containing 0" << std::endl;
+                    torch::Tensor result = torch::empty(shape, torch::kFloat32);
+                    return result;
+                }
+                
+                // Otherwise, this is an error
+                std::string error_msg = "No data found in tensor (neither raw_data nor float_data). ";
+                error_msg += "Shape: [";
+                for (int i = 0; i < tensor.dims_size(); ++i) {
+                    error_msg += std::to_string(tensor.dims(i));
+                    if (i < tensor.dims_size() - 1) error_msg += ", ";
+                }
+                error_msg += "], Total elements: " + std::to_string(total_elements);
+                onnxToTorchTensorConversionError(tensor.name(), error_msg);
             }
             std::vector<float> data;
             for (int i = 0; i < tensor.float_data_size(); ++i) {
@@ -1100,6 +1510,38 @@ namespace BoundedOperationConverter {
         return size;
     }
 
+    // Compute broadcasted output shape following NumPy/ONNX broadcasting rules.
+    // Shapes are right-aligned; for each dim, they must be equal or one of them is 1.
+    // Missing leading dims are treated as 1.
+    static TensorShape computeBroadcastShape(const String& operation, const TensorShape& a, const TensorShape& b) {
+        if (a.empty()) return b;
+        if (b.empty()) return a;
+
+        const unsigned ra = a.size();
+        const unsigned rb = b.size();
+        const unsigned r = (ra >= rb) ? ra : rb;
+
+        std::vector<unsigned> out_rev;
+        out_rev.reserve(r);
+
+        for (unsigned i = 0; i < r; ++i) {
+            unsigned da = (i < ra) ? a[ra - 1 - i] : 1;
+            unsigned db = (i < rb) ? b[rb - 1 - i] : 1;
+
+            if (da != db && da != 1 && db != 1) {
+                onnxToTorchInvalidBroadcastError(operation, a, b);
+                return TensorShape(); // unreachable; keeps compiler happy
+            }
+            out_rev.push_back((da >= db) ? da : db);
+        }
+
+        TensorShape out;
+        for (auto it = out_rev.rbegin(); it != out_rev.rend(); ++it) {
+            out.append(*it);
+        }
+        return out;
+    }
+
     std::shared_ptr<NLR::BoundedTorchNode> convertGemm(const onnx::NodeProto& node, 
                                                      const Map<String, torch::Tensor>& constants,
                                                      const Map<String, onnx::ValueInfoProto>& name_to_input,
@@ -1160,14 +1602,17 @@ namespace BoundedOperationConverter {
             bias = beta * bias;
         }
 
-        // Ensure weights and bias have proper properties for gradient-based optimization
-        // This is critical for Alpha-CROWN to work correctly:
-        // 1. contiguous() - ensures memory layout supports efficient gradient computation
+        // Ensure weights and bias have proper properties
+        // IMPORTANT: Network weights should NOT have requires_grad=True for Alpha-CROWN!
+        // Only alpha parameters (ReLU relaxation slopes) should be optimized, NOT network weights.
+        // Setting requires_grad=True on weights causes autograd graphs to build up across iterations,
+        // leading to "backward through the graph a second time" errors.
+        // 1. contiguous() - ensures memory layout supports efficient operations
         // 2. to(torch::kFloat32) - standardizes dtype for consistency
         // 3. detach() - creates a new tensor not connected to previous computation graph
-        // 4. requires_grad_(true) - enables gradient tracking for optimization
-        weights = weights.contiguous().to(torch::kFloat32).detach().requires_grad_(true);
-        bias = bias.contiguous().to(torch::kFloat32).detach().requires_grad_(true);
+        // 4. requires_grad_(false) - network weights are CONSTANTS, not optimization variables
+        weights = weights.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
+        bias = bias.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
 
         // Create linear module
         auto linear_module = torch::nn::Linear(weights.size(1), weights.size(0));
@@ -1220,7 +1665,8 @@ namespace BoundedOperationConverter {
 
         // Ensure weights have proper properties for gradient-based optimization
         // This is critical for Alpha-CROWN to work correctly when parsing from ONNX files
-        transposed_weights = transposed_weights.contiguous().to(torch::kFloat32).detach().requires_grad_(true);
+        // Network weights are constants for Alpha-CROWN (only alpha parameters are optimized)
+        transposed_weights = transposed_weights.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
 
         // Create linear module without bias (MatMul doesn't include bias)
         int64_t in_features = weights.size(0);
@@ -1266,6 +1712,17 @@ namespace BoundedOperationConverter {
         unsigned size1 = computeTensorSize(shape1);
         unsigned size2 = computeTensorSize(shape2);
 
+        // Best-effort broadcasted output size.
+        // If shape info is partial/missing, fall back to previous behavior.
+        unsigned broadcastOutputSize = 0;
+        if (!shape1.empty() || !shape2.empty()) {
+            TensorShape outShape = computeBroadcastShape("Add", shape1, shape2);
+            broadcastOutputSize = computeTensorSize(outShape);
+        }
+        if (broadcastOutputSize == 0) {
+            broadcastOutputSize = (size1 >= size2) ? size1 : size2;
+        }
+
         // Check which input is a constant
         torch::Tensor constantValue;
         bool isFirstInputConstant = (constants.exists(input1Name) || name_to_initializer.exists(input1Name));
@@ -1284,7 +1741,7 @@ namespace BoundedOperationConverter {
             boundedNode->setConstantValue(constantValue);
 
             // Size based on the variable input
-            unsigned outputSize = size2;
+            unsigned outputSize = broadcastOutputSize;
             boundedNode->setInputSize(size2);
             boundedNode->setOutputSize(outputSize);
 
@@ -1301,7 +1758,7 @@ namespace BoundedOperationConverter {
             boundedNode->setConstantValue(constantValue);
 
             // Size based on the variable input
-            unsigned outputSize = size1;
+            unsigned outputSize = broadcastOutputSize;
             boundedNode->setInputSize(size1);
             boundedNode->setOutputSize(outputSize);
 
@@ -1310,7 +1767,7 @@ namespace BoundedOperationConverter {
 
         } else if (!isFirstInputConstant && !isSecondInputConstant) {
             // Both inputs are variables
-            unsigned outputSize = (size1 >= size2) ? size1 : size2;
+            unsigned outputSize = broadcastOutputSize;
             boundedNode->setInputSize(size1);  // First input size
             boundedNode->setOutputSize(outputSize);
 
@@ -1488,6 +1945,29 @@ namespace BoundedOperationConverter {
         return boundedNode;
     }
 
+    std::shared_ptr<NLR::BoundedTorchNode> convertSigmoid(const onnx::NodeProto& node,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer) {
+        // Try to infer input size from the input tensor
+        unsigned inputSize = 0;
+        if (node.input_size() > 0) {
+            String inputName = node.input(0);
+            TensorShape inputShape = extractShapeFromNode(node, name_to_input, name_to_initializer, inputName);
+            inputSize = computeTensorSize(inputShape);
+        }
+        
+        auto sigmoid_module = torch::nn::Sigmoid();
+        auto boundedNode = std::make_shared<NLR::BoundedSigmoidNode>(sigmoid_module);
+        
+        // Set sizes if we can infer them
+        if (inputSize > 0) {
+            boundedNode->setInputSize(inputSize);
+            boundedNode->setOutputSize(inputSize); // Sigmoid preserves input size
+        }
+
+        return boundedNode;
+    }
+
     std::shared_ptr<NLR::BoundedTorchNode> convertSub(const onnx::NodeProto& node,
                                                      const Map<String, torch::Tensor>& constants,
                                                      const Map<String, onnx::ValueInfoProto>& name_to_input,
@@ -1587,6 +2067,68 @@ namespace BoundedOperationConverter {
         return boundedNode;
     }
 
+    std::shared_ptr<NLR::BoundedTorchNode> convertBatchNormalization(const onnx::NodeProto& node,
+                                                     const Map<String, torch::Tensor>& constants,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer) {
+        (void)name_to_input;
+        (void)name_to_initializer;
+
+        // ONNX BatchNormalization inputs: X, scale, B, mean, var
+        if (node.input_size() != 5) {
+            onnxToTorchUnexpectedNumberOfInputs(node, node.input_size(), 5, 5);
+            return nullptr;
+        }
+
+        float eps = AttributeUtils::getFloatAttribute(node, "epsilon", 1e-5f);
+
+        String scaleName = node.input(1);
+        String BName = node.input(2);
+        String meanName = node.input(3);
+        String varName = node.input(4);
+
+        auto getTensorConst = [&](const String& name, const char* what) -> torch::Tensor {
+            if (constants.exists(name)) {
+                return constants[name];
+            }
+            if (name_to_initializer.exists(name)) {
+                return ConstantProcessor::processInitializer(name_to_initializer[name]);
+            }
+            onnxToTorchInvalidWeightBiasError("BatchNormalization", Stringf("%s tensor not found in constants/initializers", what).ascii());
+            return torch::Tensor();
+        };
+
+        torch::Tensor scale = getTensorConst(scaleName, "scale");
+        torch::Tensor B = getTensorConst(BName, "B");
+        torch::Tensor mean = getTensorConst(meanName, "mean");
+        torch::Tensor var = getTensorConst(varName, "var");
+
+        if (!scale.defined() || !B.defined() || !mean.defined() || !var.defined()) {
+            return nullptr;
+        }
+
+        // Ensure float32 contiguous
+        scale = scale.contiguous().to(torch::kFloat32);
+        B = B.contiguous().to(torch::kFloat32);
+        mean = mean.contiguous().to(torch::kFloat32);
+        var = var.contiguous().to(torch::kFloat32);
+
+        auto boundedNode = std::make_shared<NLR::BoundedBatchNormNode>(scale, B, mean, var, eps);
+
+        // If shape is known, set input/output sizes (dimension preserving)
+        if (node.input_size() > 0) {
+            String inputName = node.input(0);
+            TensorShape inputShape = extractShapeFromNode(node, name_to_input, name_to_initializer, inputName);
+            unsigned inputSize = computeTensorSize(inputShape);
+            if (inputSize > 0) {
+                boundedNode->setInputSize(inputSize);
+                boundedNode->setOutputSize(inputSize);
+            }
+        }
+
+        return boundedNode;
+    }
+
     std::shared_ptr<NLR::BoundedTorchNode> convertConstant(const torch::Tensor& value) {
         auto boundedNode = std::make_shared<NLR::BoundedConstantNode>(value, "");
         
@@ -1605,9 +2147,25 @@ namespace BoundedOperationConverter {
     std::shared_ptr<NLR::BoundedTorchNode> convertConv(const onnx::NodeProto& node,
                                                      const Map<String, torch::Tensor>& constants,
                                                      const Map<String, onnx::ValueInfoProto>& name_to_input,
-                                                     const Map<String, onnx::TensorProto>& name_to_initializer) {
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer,
+                                                     const Map<String, Vector<int>>& shape_metadata) {
         (void)name_to_input; // Suppress unused parameter warning
         (void)name_to_initializer; // Suppress unused parameter warning
+        
+        // Extract input shape from metadata if available
+        Vector<int> input_shape;
+        if (node.input_size() > 0) {
+            String inputName = node.input(0);
+            if (shape_metadata.exists(inputName)) {
+                input_shape = shape_metadata[inputName];
+                std::cout << "[OnnxToTorch::convertConv] Using ONNX shape metadata for input " << inputName.ascii() << ": [";
+                for (unsigned i = 0; i < input_shape.size(); ++i) {
+                    std::cout << input_shape[i];
+                    if (i < input_shape.size() - 1) std::cout << ", ";
+                }
+                std::cout << "]" << std::endl;
+            }
+        }
 
         // Conv node should have at least 2 inputs: X and W (weight)
         // Optional third input is B (bias)
@@ -1666,23 +2224,333 @@ namespace BoundedOperationConverter {
         // Extract attributes from ONNX node
         // Default values based on ONNX Conv operator specification
         auto kernel_shape = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "kernel_shape", {});
-        auto strides = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "strides", {1, 1});
-        auto pads = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "pads", {0, 0, 0, 0});
-        auto dilations = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "dilations", {1, 1});
         int group = AttributeUtils::getIntAttribute(node, "group", 1);
-
-        // Validate weight tensor dimensions
-        // ONNX Conv weight format is [M, C/group, kH, kW] for 2D
-        if (weights.dim() != 4) {
+        
+        // Determine if this is Conv1D or Conv2D based on weight dimensions
+        bool is_conv1d = (weights.dim() == 3);
+        bool is_conv2d = (weights.dim() == 4);
+        
+        if (!is_conv1d && !is_conv2d) {
             onnxToTorchInvalidWeightBiasError("Conv",
-                Stringf("Expected 4D weight tensor, got %ldD", weights.dim()).ascii());
+                Stringf("Expected 3D (Conv1d) or 4D (Conv2d) weight tensor, got %ldD", weights.dim()).ascii());
             return nullptr;
         }
+        
+        // Set default values based on convolution dimensionality
+        auto strides = is_conv1d ? 
+            AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "strides", {1}) :
+            AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "strides", {1, 1});
+        auto pads = is_conv1d ?
+            AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "pads", {0, 0}) :
+            AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "pads", {0, 0, 0, 0});
+        auto dilations = is_conv1d ?
+            AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "dilations", {1}) :
+            AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "dilations", {1, 1});
 
         // Extract dimensions from weight tensor
         int out_channels = weights.size(0);
         int in_channels_per_group = weights.size(1);
         int in_channels = in_channels_per_group * group;
+        
+        if (is_conv1d) {
+            // Conv1D: weight shape [M, C/group, kL]
+            int kernel_length = weights.size(2);
+            
+            // Validate kernel_shape if provided
+            if (!kernel_shape.empty()) {
+                if (kernel_shape.size() != 1 || kernel_shape[0] != kernel_length) {
+                    onnxToTorchAttributeProcessingError(node, "kernel_shape",
+                        "Mismatch with weight tensor dimensions for Conv1d");
+                }
+            }
+        } else {
+            // Conv2D: weight shape [M, C/group, kH, kW]
+            int kernel_height = weights.size(2);
+            int kernel_width = weights.size(3);
+            
+            // Validate kernel_shape if provided
+            if (!kernel_shape.empty()) {
+                if (kernel_shape.size() != 2 ||
+                    kernel_shape[0] != kernel_height ||
+                    kernel_shape[1] != kernel_width) {
+                    onnxToTorchAttributeProcessingError(node, "kernel_shape",
+                        "Mismatch with weight tensor dimensions for Conv2d");
+                }
+            }
+        }
+
+        // Convert ONNX padding format to PyTorch format
+        std::vector<int64_t> padding;
+        if (is_conv1d) {
+            // Conv1D: ONNX pads format is [begin, end]
+            if (pads.size() == 2) {
+                std::cout << "[OnnxToTorch::convertConv] Conv1d Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
+                // Check if padding is symmetric
+                if (pads[0] == pads[1]) {
+                    padding = {pads[0]};
+                } else {
+                    // Asymmetric padding - use begin padding
+                    padding = {pads[0]};
+                    std::cerr << "[OnnxToTorch::convertConv] Warning: Asymmetric padding detected for Conv1d. "
+                              << "Using begin=" << pads[0] << " padding." << std::endl;
+                }
+            } else if (pads.empty()) {
+                padding = {0};
+            } else {
+                onnxToTorchAttributeProcessingError(node, "pads",
+                    Stringf("Invalid padding size for Conv1d: %lu", pads.size()).ascii());
+            }
+        } else {
+            // Conv2D: ONNX pads format is [top, left, bottom, right]
+            if (pads.size() == 4) {
+                std::cout << "[OnnxToTorch::convertConv] Conv2d Pads: [" << pads[0] << ", " << pads[1] << ", " << pads[2] << ", " << pads[3] << "]" << std::endl;
+                // Check if padding is symmetric
+                if (pads[0] == pads[2] && pads[1] == pads[3]) {
+                    padding = {pads[0], pads[1]};
+                } else {
+                    // Asymmetric padding will need special handling
+                    // For now, we'll use the top and left padding values
+                    padding = {pads[0], pads[1]};
+                    std::cerr << "[OnnxToTorch::convertConv] Warning: Asymmetric padding detected for Conv2d. "
+                              << "Using top=" << pads[0] << " and left=" << pads[1] << " padding." << std::endl;
+                }
+            } else if (pads.size() == 2) {
+                std::cout << "[OnnxToTorch::convertConv] Conv2d Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
+                padding = {pads[0], pads[1]};
+            } else if (pads.empty()) {
+                padding = {0, 0};
+            } else {
+                onnxToTorchAttributeProcessingError(node, "pads",
+                    Stringf("Invalid padding size for Conv2d: %lu", pads.size()).ascii());
+            }
+        }
+
+        // Convert to int64_t vectors for PyTorch
+        std::vector<int64_t> stride_vec(strides.begin(), strides.end());
+        std::vector<int64_t> dilation_vec(dilations.begin(), dilations.end());
+
+        // Network weights are constants for Alpha-CROWN (only alpha parameters are optimized)
+        weights = weights.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
+        if (has_bias) {
+            bias = bias.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
+        }
+
+        // Create PyTorch Conv module and bounded node
+        std::shared_ptr<NLR::BoundedConvNode> boundedNode;
+        
+        if (is_conv1d) {
+            // Create Conv1d module
+            int kernel_length = weights.size(2);
+            torch::nn::Conv1dOptions conv_options(in_channels, out_channels, kernel_length);
+            conv_options.stride(stride_vec);
+            conv_options.padding(padding);
+            conv_options.dilation(dilation_vec);
+            conv_options.groups(group);
+            conv_options.bias(has_bias);
+
+            auto conv_module = torch::nn::Conv1d(conv_options);
+
+            // Set weights and bias
+            conv_module->weight = weights;
+            if (has_bias) {
+                conv_module->bias = bias;
+            }
+
+            // Create bounded convolution node (Conv1d doesn't use MATRIX mode)
+            boundedNode = std::make_shared<NLR::BoundedConvNode>(conv_module,
+                                                                   NLR::ConvMode::PATCHES);
+        } else {
+            // Create Conv2d module
+            int kernel_height = weights.size(2);
+            int kernel_width = weights.size(3);
+            torch::nn::Conv2dOptions conv_options(in_channels, out_channels,
+                                                  {kernel_height, kernel_width});
+            conv_options.stride(stride_vec);
+            conv_options.padding(padding);
+            conv_options.dilation(dilation_vec);
+            conv_options.groups(group);
+            conv_options.bias(has_bias);
+
+            auto conv_module = torch::nn::Conv2d(conv_options);
+
+            // Set weights and bias
+            conv_module->weight = weights;
+            if (has_bias) {
+                conv_module->bias = bias;
+            }
+
+            // Create bounded convolution node with default MATRIX mode
+            boundedNode = std::make_shared<NLR::BoundedConvNode>(conv_module,
+                                                                   NLR::ConvMode::MATRIX);
+        }
+
+        // Set sizes based on convolution parameters and ONNX shape metadata
+        if (!input_shape.empty()) {
+            // Use ONNX shape metadata to compute exact input/output sizes
+            unsigned input_size = 1;
+            for (unsigned i = 1; i < input_shape.size(); ++i) { // Skip batch dimension
+                if (input_shape[i] > 0) {
+                    input_size *= input_shape[i];
+                }
+            }
+            
+            // Compute output size based on convolution formula
+            unsigned output_size = 0;
+            if (is_conv1d && input_shape.size() >= 3) {
+                // Conv1D: [N, C, L]
+                int L = input_shape[2];
+                if (L > 0) {
+                    int kernel_length = weights.size(2);
+                    int out_l = (L + 2 * padding[0] - dilation_vec[0] * (kernel_length - 1) - 1) / stride_vec[0] + 1;
+                    output_size = out_channels * out_l;
+                    std::cout << "[OnnxToTorch::convertConv] Conv1d computed output size: " << output_size 
+                              << " (out_channels=" << out_channels << ", out_l=" << out_l << ")" << std::endl;
+                }
+            } else if (!is_conv1d && input_shape.size() >= 4) {
+                // Conv2D: [N, C, H, W]
+                int H = input_shape[2];
+                int W = input_shape[3];
+                if (H > 0 && W > 0) {
+                    int kernel_height = weights.size(2);
+                    int kernel_width = weights.size(3);
+                    int out_h = (H + 2 * padding[0] - dilation_vec[0] * (kernel_height - 1) - 1) / stride_vec[0] + 1;
+                    int out_w = (W + 2 * padding[1] - dilation_vec[1] * (kernel_width - 1) - 1) / stride_vec[1] + 1;
+                    output_size = out_channels * out_h * out_w;
+                    std::cout << "[OnnxToTorch::convertConv] Conv2d computed output size: " << output_size 
+                              << " (out_channels=" << out_channels << ", out_h=" << out_h << ", out_w=" << out_w << ")" << std::endl;
+                }
+            }
+            
+            if (input_size > 0 && output_size > 0) {
+                boundedNode->setInputSize(input_size);
+                boundedNode->setOutputSize(output_size);
+                std::cout << "[OnnxToTorch::convertConv] Set input_size=" << input_size 
+                          << ", output_size=" << output_size << " from ONNX metadata" << std::endl;
+                
+                // Also set the full input/output shape vectors for IBP
+                std::vector<int> input_shape_vec;
+                std::vector<int> output_shape_vec;
+                
+                for (unsigned dim : input_shape) {
+                    // Skip dynamic dimensions (marked as -1 or 0)
+                    if (dim > 0) {
+                        input_shape_vec.push_back(static_cast<int>(dim));
+                    } else {
+                        input_shape_vec.push_back(1); // Use 1 for batch dimension
+                    }
+                }
+                
+                // Compute output shape
+                if (is_conv1d && input_shape.size() >= 3) {
+                    int N = (input_shape[0] > 0) ? input_shape[0] : 1;
+                    int L = input_shape[2];
+                    int kernel_length = weights.size(2);
+                    int out_l = (L + 2 * padding[0] - dilation_vec[0] * (kernel_length - 1) - 1) / stride_vec[0] + 1;
+                    output_shape_vec = {N, out_channels, out_l};
+                } else if (!is_conv1d && input_shape.size() >= 4) {
+                    int N = (input_shape[0] > 0) ? input_shape[0] : 1;
+                    int H = input_shape[2];
+                    int W = input_shape[3];
+                    int kernel_height = weights.size(2);
+                    int kernel_width = weights.size(3);
+                    int out_h = (H + 2 * padding[0] - dilation_vec[0] * (kernel_height - 1) - 1) / stride_vec[0] + 1;
+                    int out_w = (W + 2 * padding[1] - dilation_vec[1] * (kernel_width - 1) - 1) / stride_vec[1] + 1;
+                    output_shape_vec = {N, out_channels, out_h, out_w};
+                }
+                
+                if (!input_shape_vec.empty() && !output_shape_vec.empty()) {
+                    boundedNode->setInputShape(input_shape_vec);
+                    boundedNode->setOutputShape(output_shape_vec);
+                    std::cout << "[OnnxToTorch::convertConv] Set input_shape=[";
+                    for (size_t i = 0; i < input_shape_vec.size(); ++i) {
+                        std::cout << input_shape_vec[i];
+                        if (i < input_shape_vec.size() - 1) std::cout << ", ";
+                    }
+                    std::cout << "], output_shape=[";
+                    for (size_t i = 0; i < output_shape_vec.size(); ++i) {
+                        std::cout << output_shape_vec[i];
+                        if (i < output_shape_vec.size() - 1) std::cout << ", ";
+                    }
+                    std::cout << "]" << std::endl;
+                }
+            }
+        }
+
+        return boundedNode;
+    }
+
+    std::shared_ptr<NLR::BoundedTorchNode> convertConvTranspose(const onnx::NodeProto& node,
+                                                     const Map<String, torch::Tensor>& constants,
+                                                     const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                     const Map<String, onnx::TensorProto>& name_to_initializer) {
+        (void)name_to_input; // Suppress unused parameter warning
+        (void)name_to_initializer; // Suppress unused parameter warning
+
+        // ConvTranspose node should have at least 2 inputs: X and W (weight)
+        // Optional third input is B (bias)
+        if (node.input_size() < 2) {
+            onnxToTorchUnexpectedNumberOfInputs(node, node.input_size(), 2, 3);
+            return nullptr;
+        }
+
+        String weightName = node.input(1);
+        String biasName = (node.input_size() > 2) ? node.input(2) : "";
+
+        // Get weight tensor from constants
+        torch::Tensor weights;
+        bool foundWeights = false;
+
+        if (constants.exists(weightName)) {
+            weights = constants[weightName];
+            foundWeights = true;
+        } else {
+            // Try alternative names if exact name not found
+            Vector<String> possibleNames = {weightName, "weight", "W", "weights"};
+            for (const auto& name : possibleNames) {
+                if (constants.exists(name)) {
+                    weights = constants[name];
+                    foundWeights = true;
+                    break;
+                }
+            }
+        }
+
+        if (!foundWeights) {
+            onnxToTorchInvalidWeightBiasError("ConvTranspose", "Weight tensor not found in constants");
+            return nullptr;
+        }
+
+        // Handle bias tensor
+        torch::Tensor bias;
+        bool has_bias = false;
+        if (biasName.length() > 0 && constants.exists(biasName)) {
+            bias = constants[biasName];
+            has_bias = true;
+        }
+
+        // Extract attributes from ONNX node
+        // Default values based on ONNX ConvTranspose operator specification
+        auto kernel_shape = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "kernel_shape", {});
+        auto strides = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "strides", {1, 1});
+        auto pads = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "pads", {0, 0, 0, 0});
+        auto dilations = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "dilations", {1, 1});
+        auto output_padding = AttributeUtils::getIntsAttribute(const_cast<onnx::NodeProto&>(node), "output_padding", {0, 0});
+        int group = AttributeUtils::getIntAttribute(node, "group", 1);
+
+        // Validate weight tensor dimensions
+        // ONNX ConvTranspose weight format is [C, M/group, kH, kW] for 2D
+        // (Note: This is reversed from Conv which is [M, C/group, kH, kW])
+        if (weights.dim() != 4) {
+            onnxToTorchInvalidWeightBiasError("ConvTranspose",
+                Stringf("Expected 4D weight tensor, got %ldD", weights.dim()).ascii());
+            return nullptr;
+        }
+
+        // Extract dimensions from weight tensor
+        // For ConvTranspose: weight is [in_channels, out_channels/group, kH, kW]
+        int in_channels = weights.size(0);
+        int out_channels_per_group = weights.size(1);
+        int out_channels = out_channels_per_group * group;
         int kernel_height = weights.size(2);
         int kernel_width = weights.size(3);
 
@@ -1698,10 +2566,10 @@ namespace BoundedOperationConverter {
 
         // Convert ONNX padding format to PyTorch format
         // ONNX: [top, left, bottom, right] or [begin_1, begin_2, end_1, end_2]
-        // PyTorch Conv2d: single value or (height, width)
+        // PyTorch ConvTranspose2d: single value or (height, width)
         std::vector<int64_t> padding;
         if (pads.size() == 4) {
-            std::cout << "[OnnxToTorch::convertConv] Pads: [" << pads[0] << ", " << pads[1] << ", " << pads[2] << ", " << pads[3] << "]" << std::endl;
+            std::cout << "[OnnxToTorch::convertConvTranspose] Pads: [" << pads[0] << ", " << pads[1] << ", " << pads[2] << ", " << pads[3] << "]" << std::endl;
             // Check if padding is symmetric
             if (pads[0] == pads[2] && pads[1] == pads[3]) {
                 padding = {pads[0], pads[1]};
@@ -1709,11 +2577,11 @@ namespace BoundedOperationConverter {
                 // Asymmetric padding will need special handling
                 // For now, we'll use the top and left padding values
                 padding = {pads[0], pads[1]};
-                std::cerr << "[OnnxToTorch::convertConv] Warning: Asymmetric padding detected. "
+                std::cerr << "[OnnxToTorch::convertConvTranspose] Warning: Asymmetric padding detected. "
                           << "Using top=" << pads[0] << " and left=" << pads[1] << " padding." << std::endl;
             }
         } else if (pads.size() == 2) {
-            std::cout << "[OnnxToTorch::convertConv] Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
+            std::cout << "[OnnxToTorch::convertConvTranspose] Pads: [" << pads[0] << ", " << pads[1] << "]" << std::endl;
             padding = {pads[0], pads[1]};
         } else if (pads.empty()) {
             padding = {0, 0};
@@ -1725,54 +2593,375 @@ namespace BoundedOperationConverter {
         // Convert to int64_t vectors for PyTorch
         std::vector<int64_t> stride_vec(strides.begin(), strides.end());
         std::vector<int64_t> dilation_vec(dilations.begin(), dilations.end());
+        std::vector<int64_t> output_padding_vec(output_padding.begin(), output_padding.end());
 
-        // Ensure tensors have correct properties for gradient computation
-        weights = weights.contiguous().to(torch::kFloat32).detach().requires_grad_(true);
-        if (has_bias) {
-            bias = bias.contiguous().to(torch::kFloat32).detach().requires_grad_(true);
+        // Apply assertions from auto_LiRPA implementation
+        if (output_padding_vec.size() != 2 || output_padding_vec[0] != 0 || output_padding_vec[1] != 0) {
+            std::cerr << "[OnnxToTorch::convertConvTranspose] Warning: output_padding must be [0, 0]. "
+                      << "Provided: [" << (output_padding_vec.size() > 0 ? output_padding_vec[0] : 0) << ", "
+                      << (output_padding_vec.size() > 1 ? output_padding_vec[1] : 0) << "]" << std::endl;
+            output_padding_vec = {0, 0};
+        }
+        if (dilation_vec[0] != 1 || dilation_vec[1] != 1) {
+            onnxToTorchAttributeProcessingError(node, "dilations",
+                "ConvTranspose only supports dilation [1, 1]");
+            return nullptr;
+        }
+        if (stride_vec[0] != stride_vec[1]) {
+            onnxToTorchAttributeProcessingError(node, "strides",
+                "ConvTranspose requires symmetric stride (stride[0] == stride[1])");
+            return nullptr;
+        }
+        if (group != 1) {
+            onnxToTorchAttributeProcessingError(node, "group",
+                "ConvTranspose only supports group = 1");
+            return nullptr;
         }
 
-        // Create PyTorch Conv2d module
-        torch::nn::Conv2dOptions conv_options(in_channels, out_channels,
-                                              {kernel_height, kernel_width});
-        conv_options.stride(stride_vec);
-        conv_options.padding(padding);
-        conv_options.dilation(dilation_vec);
-        conv_options.groups(group);
-        conv_options.bias(has_bias);
+        // Network weights are constants for Alpha-CROWN (only alpha parameters are optimized)
+        weights = weights.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
+        if (has_bias) {
+            bias = bias.contiguous().to(torch::kFloat32).detach().requires_grad_(false);
+        }
 
-        auto conv_module = torch::nn::Conv2d(conv_options);
+        // Create PyTorch ConvTranspose2d module
+        torch::nn::ConvTranspose2dOptions convt_options(in_channels, out_channels,
+                                                        {kernel_height, kernel_width});
+        convt_options.stride(stride_vec);
+        convt_options.padding(padding);
+        convt_options.dilation(dilation_vec);
+        convt_options.output_padding(output_padding_vec);
+        convt_options.groups(group);
+        convt_options.bias(has_bias);
+
+        auto convtranspose_module = torch::nn::ConvTranspose2d(convt_options);
 
         // Set weights and bias
-        conv_module->weight = weights;
+        convtranspose_module->weight = weights;
         if (has_bias) {
-            conv_module->bias = bias;
+            convtranspose_module->bias = bias;
         }
 
-        // Create bounded convolution node with default MATRIX mode
-        auto boundedNode = std::make_shared<NLR::BoundedConvNode>(conv_module,
-                                                                NLR::ConvMode::MATRIX);
+        // Create bounded convolution transpose node with default MATRIX mode
+        auto boundedNode = std::make_shared<NLR::BoundedConvTransposeNode>(convtranspose_module,
+                                                                           NLR::ConvMode::MATRIX);
 
-        // Set sizes based on convolution parameters
-        // For now, we'll leave the sizes to be inferred from dependencies
-        // The actual computation of Conv output sizes depends on input spatial dimensions
-        // which we don't have at this point
+        std::cout << "[OnnxToTorch::convertConvTranspose] Created ConvTranspose node with:"
+                  << " in_channels=" << in_channels
+                  << ", out_channels=" << out_channels
+                  << ", kernel=(" << kernel_height << "," << kernel_width << ")"
+                  << ", stride=(" << stride_vec[0] << "," << stride_vec[1] << ")"
+                  << ", padding=(" << padding[0] << "," << padding[1] << ")"
+                  << ", output_padding=(" << output_padding_vec[0] << "," << output_padding_vec[1] << ")"
+                  << ", dilation=(" << dilation_vec[0] << "," << dilation_vec[1] << ")"
+                  << ", groups=" << group
+                  << ", has_bias=" << has_bias << std::endl;
 
-        // TODO: Compute and set proper input/output sizes based on:
-        // - in_channels, out_channels
-        // - input spatial dimensions (from previous layer)
-        // - kernel, stride, padding, dilation parameters
+        return boundedNode;
+    }
 
-//         std::cout << "[OnnxToTorch::convertConv] Created Conv node with:"
-//                   << " in_channels=" << in_channels
-//                   << ", out_channels=" << out_channels
-//                   << ", kernel=(" << kernel_height << "," << kernel_width << ")"
-//                   << ", stride=(" << stride_vec[0] << "," << stride_vec[1] << ")"
-//                   << ", padding=(" << padding[0] << "," << padding[1] << ")"
-//                   << ", dilation=(" << dilation_vec[0] << "," << dilation_vec[1] << ")"
-//                   << ", groups=" << group
-//                   << ", has_bias=" << has_bias << std::endl;
+    std::shared_ptr<NLR::BoundedTorchNode> convertConcat(const onnx::NodeProto& node,
+                                                          const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                          const Map<String, onnx::TensorProto>& name_to_initializer,
+                                                          const Map<String, Vector<int>>& shape_metadata) {
+        // #region agent log
+        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2643\",\"message\":\"convertConcat entry\",\"data\":{\"node_name\":\"" << node.name() << "\",\"node_output\":\"" << (node.output_size()>0?node.output(0):"") << "\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"ENTRY\"}\n"; }
+        // #endregion
+        // Extract axis attribute (default = 1 in ONNX)
+        int axis = AttributeUtils::getIntAttribute(node, "axis", 1);
+        
+        // #region agent log
+        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2648\",\"message\":\"axis extracted\",\"data\":{\"axis\":" << axis << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A\"}\n"; }
+        // #endregion
+        
+        // Get number of inputs
+        unsigned numInputs = node.input_size();
+        if (numInputs < 2) {
+            onnxToTorchUnexpectedNumberOfInputs(node, numInputs, 2, 100);
+            return nullptr;
+        }
+        
+        // Create Concat node
+        auto boundedNode = std::make_shared<NLR::BoundedConcatNode>(axis, numInputs);
+        
+        // Collect sizes along the concat axis (matching auto_LiRPA's input_size)
+        // In auto_LiRPA: self.input_size = [item.shape[self.axis] for item in x]
+        std::vector<unsigned> input_sizes_along_axis;
+        unsigned output_size_total = 0;
+        
+        std::cerr << "[convertConcat] Processing concat with axis=" << axis << ", numInputs=" << numInputs << std::endl;
+        
+        for (unsigned i = 0; i < numInputs; ++i) {
+            String inputName = node.input(i);
+            
+            // #region agent log
+            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2667\",\"message\":\"processing input\",\"data\":{\"input_index\":" << i << ",\"input_name\":\"" << inputName.ascii() << "\",\"in_shape_metadata\":" << (shape_metadata.exists(inputName) ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"B,E\"}\n"; }
+            // #endregion
+            
+            // Try to get shape from shape_metadata first (for intermediate tensors)
+            TensorShape inputShape;
+            if (shape_metadata.exists(inputName)) {
+                const Vector<int>& shape_vec = shape_metadata[inputName];
+                for (unsigned j = 0; j < shape_vec.size(); ++j) {
+                    inputShape.append(static_cast<unsigned>(shape_vec[j]));
+                }
+            } else {
+                inputShape = extractShapeFromNode(node, name_to_input, name_to_initializer, inputName);
+            }
+            
+            // #region agent log
+            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2680\",\"message\":\"shape extracted\",\"data\":{\"input_index\":" << i << ",\"shape_size\":" << inputShape.size() << ",\"shape_empty\":" << (inputShape.empty() ? "true" : "false") << ",\"axis\":" << axis << ",\"axis_in_bounds\":" << (axis >= 0 && axis < (int)inputShape.size() ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"A,B,C\"}\n"; }
+            // #endregion
+            
+            std::cerr << "  Input " << i << " (" << inputName.ascii() << "): shape=[";
+            for (size_t j = 0; j < inputShape.size(); ++j) {
+                std::cerr << inputShape[j];
+                if (j < inputShape.size() - 1) std::cerr << ", ";
+            }
+            std::cerr << "]" << std::endl;
+            
+            if (!inputShape.empty() && axis >= 0 && axis < (int)inputShape.size()) {
+                // Get size along concat axis only
+                unsigned size_along_axis = inputShape[axis];
+                input_sizes_along_axis.push_back(size_along_axis);
+                output_size_total += size_along_axis;
+                std::cerr << "    Size along axis " << axis << ": " << size_along_axis << std::endl;
+                // #region agent log
+                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2691\",\"message\":\"size added\",\"data\":{\"input_index\":" << i << ",\"size_along_axis\":" << size_along_axis << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"C\"}\n"; }
+                // #endregion
+            } else {
+                // #region agent log
+                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2694\",\"message\":\"input SKIPPED\",\"data\":{\"input_index\":" << i << ",\"reason\":\"shape_empty_or_axis_out_of_bounds\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"B,C\"}\n"; }
+                // #endregion
+            }
+        }
+        
+        std::cerr << "[convertConcat] input_sizes_along_axis=[";
+        for (size_t i = 0; i < input_sizes_along_axis.size(); ++i) {
+            std::cerr << input_sizes_along_axis[i];
+            if (i < input_sizes_along_axis.size() - 1) std::cerr << ", ";
+        }
+        std::cerr << "]" << std::endl;
+        
+        // #region agent log
+        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2703\",\"message\":\"input_sizes collected\",\"data\":{\"sizes_count\":" << input_sizes_along_axis.size() << ",\"expected_count\":" << numInputs << ",\"count_mismatch\":" << (input_sizes_along_axis.size() != numInputs ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"C\"}\n"; }
+        // #endregion
+        
+        // Store the sizes along concat axis for use in backward pass
+        if (!input_sizes_along_axis.empty()) {
+            boundedNode->setInputSizes(input_sizes_along_axis);
+            
+            // For setInputSize/setOutputSize, we can use the first input's total size
+            // and the computed total output size along concat axis
+            String firstInputName = node.input(0);
+            
+            // Try to get shape from shape_metadata first (for intermediate tensors)
+            TensorShape firstShape;
+            if (shape_metadata.exists(firstInputName)) {
+                const Vector<int>& shape_vec = shape_metadata[firstInputName];
+                for (unsigned j = 0; j < shape_vec.size(); ++j) {
+                    firstShape.append(static_cast<unsigned>(shape_vec[j]));
+                }
+            } else {
+                firstShape = extractShapeFromNode(node, name_to_input, name_to_initializer, firstInputName);
+            }
+            
+            // #region agent log
+            { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2722\",\"message\":\"before accessing firstShape[axis]\",\"data\":{\"firstShape_size\":" << firstShape.size() << ",\"axis\":" << axis << ",\"axis_in_bounds\":" << (axis >= 0 && axis < (int)firstShape.size() ? "true" : "false") << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"D\"}\n"; }
+            // #endregion
+            
+            if (!firstShape.empty()) {
+                // #region agent log
+                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2727\",\"message\":\"firstShape not empty, computing sizes\",\"data\":{\"axis_check\":\"about_to_access_firstShape[axis]\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"D\"}\n"; }
+                // #endregion
+                unsigned firstTensorSize = computeTensorSize(firstShape);
+                unsigned concatAxisSize = firstShape[axis];
+                unsigned computedOutputSize = firstTensorSize / concatAxisSize * output_size_total;
+                boundedNode->setInputSize(firstTensorSize);
+                boundedNode->setOutputSize(computedOutputSize);
+                
+                std::cerr << "[convertConcat] firstTensorSize=" << firstTensorSize 
+                          << ", concatAxisSize=" << concatAxisSize 
+                          << ", output_size_total=" << output_size_total 
+                          << ", computedOutputSize=" << computedOutputSize << std::endl;
+                // #region agent log
+                { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2738\",\"message\":\"sizes computed successfully\",\"data\":{\"firstTensorSize\":" << firstTensorSize << ",\"concatAxisSize\":" << concatAxisSize << ",\"output_size_total\":" << output_size_total << ",\"computedOutputSize\":" << computedOutputSize << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"D\"}\n"; }
+                // #endregion
+            }
+        }
+        
+        // #region agent log
+        { std::ofstream log("/Users/hlecates/Desktop/autolirpa/.cursor/debug.log", std::ios::app); log << "{\"location\":\"OnnxToTorch.cpp:2746\",\"message\":\"convertConcat exit\",\"data\":{\"success\":true},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",\"sessionId\":\"debug-session\",\"hypothesisId\":\"EXIT\"}\n"; }
+        // #endregion
+        return boundedNode;
+    }
 
+    std::shared_ptr<NLR::BoundedTorchNode> convertSlice(const onnx::NodeProto& node,
+                                                         const Map<String, onnx::ValueInfoProto>& name_to_input,
+                                                         const Map<String, onnx::TensorProto>& name_to_initializer,
+                                                         const Map<String, Vector<int>>& shape_metadata) {
+        // ONNX Slice can have parameters as attributes or as inputs
+        // Opset < 10: uses attributes (starts, ends, axes)
+        // Opset >= 10: uses inputs (data, starts, ends, axes, steps)
+        
+        int start = 0, end = INT32_MAX, axis = 0, step = 1;
+        
+        // Try to get from attributes first (older ONNX versions)
+        bool has_attributes = false;
+        for (const auto& attr : node.attribute()) {
+            if (attr.name() == "starts" && attr.ints_size() > 0) {
+                start = attr.ints(0);
+                has_attributes = true;
+            } else if (attr.name() == "ends" && attr.ints_size() > 0) {
+                end = attr.ints(0);
+                has_attributes = true;
+            } else if (attr.name() == "axes" && attr.ints_size() > 0) {
+                axis = attr.ints(0);
+                has_attributes = true;
+            }
+        }
+        
+        // If not in attributes, try to get from constant inputs (newer ONNX versions)
+        if (!has_attributes && node.input_size() >= 3) {
+            // Input format: [data, starts, ends, axes?, steps?]
+            
+            // Get starts
+            if (node.input_size() > 1) {
+                String startsName = node.input(1);
+                if (name_to_initializer.exists(startsName)) {
+                    const auto& tensor = name_to_initializer[startsName];
+                    if (tensor.data_type() == onnx::TensorProto::INT64) {
+                        if (tensor.int64_data_size() > 0) {
+                            start = tensor.int64_data(0);
+                        } else if (tensor.raw_data().size() >= 8) {
+                            // Extract from raw_data
+                            const char* raw = tensor.raw_data().data();
+                            start = *reinterpret_cast<const int64_t*>(raw);
+                        }
+                    } else if (tensor.data_type() == onnx::TensorProto::INT32) {
+                        if (tensor.int32_data_size() > 0) {
+                            start = tensor.int32_data(0);
+                        } else if (tensor.raw_data().size() >= 4) {
+                            const char* raw = tensor.raw_data().data();
+                            start = *reinterpret_cast<const int32_t*>(raw);
+                        }
+                    }
+                }
+            }
+            
+            // Get ends
+            if (node.input_size() > 2) {
+                String endsName = node.input(2);
+                if (name_to_initializer.exists(endsName)) {
+                    const auto& tensor = name_to_initializer[endsName];
+                    if (tensor.data_type() == onnx::TensorProto::INT64) {
+                        if (tensor.int64_data_size() > 0) {
+                            end = tensor.int64_data(0);
+                        } else if (tensor.raw_data().size() >= 8) {
+                            const char* raw = tensor.raw_data().data();
+                            end = *reinterpret_cast<const int64_t*>(raw);
+                        }
+                    } else if (tensor.data_type() == onnx::TensorProto::INT32) {
+                        if (tensor.int32_data_size() > 0) {
+                            end = tensor.int32_data(0);
+                        } else if (tensor.raw_data().size() >= 4) {
+                            const char* raw = tensor.raw_data().data();
+                            end = *reinterpret_cast<const int32_t*>(raw);
+                        }
+                    }
+                }
+            }
+            
+            // Get axes (optional)
+            if (node.input_size() > 3) {
+                String axesName = node.input(3);
+                if (name_to_initializer.exists(axesName)) {
+                    const auto& tensor = name_to_initializer[axesName];
+                    if (tensor.data_type() == onnx::TensorProto::INT64) {
+                        if (tensor.int64_data_size() > 0) {
+                            axis = tensor.int64_data(0);
+                        } else if (tensor.raw_data().size() >= 8) {
+                            const char* raw = tensor.raw_data().data();
+                            axis = *reinterpret_cast<const int64_t*>(raw);
+                        }
+                    } else if (tensor.data_type() == onnx::TensorProto::INT32) {
+                        if (tensor.int32_data_size() > 0) {
+                            axis = tensor.int32_data(0);
+                        } else if (tensor.raw_data().size() >= 4) {
+                            const char* raw = tensor.raw_data().data();
+                            axis = *reinterpret_cast<const int32_t*>(raw);
+                        }
+                    }
+                }
+            }
+            
+            // Get steps (optional)
+            if (node.input_size() > 4) {
+                String stepsName = node.input(4);
+                if (name_to_initializer.exists(stepsName)) {
+                    const auto& tensor = name_to_initializer[stepsName];
+                    if (tensor.data_type() == onnx::TensorProto::INT64) {
+                        if (tensor.int64_data_size() > 0) {
+                            step = tensor.int64_data(0);
+                        } else if (tensor.raw_data().size() >= 8) {
+                            const char* raw = tensor.raw_data().data();
+                            step = *reinterpret_cast<const int64_t*>(raw);
+                        }
+                    } else if (tensor.data_type() == onnx::TensorProto::INT32) {
+                        if (tensor.int32_data_size() > 0) {
+                            step = tensor.int32_data(0);
+                        } else if (tensor.raw_data().size() >= 4) {
+                            const char* raw = tensor.raw_data().data();
+                            step = *reinterpret_cast<const int32_t*>(raw);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Create Slice node
+        auto boundedNode = std::make_shared<NLR::BoundedSliceNode>(start, end, axis, step);
+        
+        // Try to infer input shape and sizes
+        if (node.input_size() > 0) {
+            String inputName = node.input(0);
+            
+            // Try to get shape from shape_metadata first (for intermediate tensors)
+            TensorShape inputShape;
+            if (shape_metadata.exists(inputName)) {
+                const Vector<int>& shape_vec = shape_metadata[inputName];
+                for (unsigned j = 0; j < shape_vec.size(); ++j) {
+                    inputShape.append(static_cast<unsigned>(shape_vec[j]));
+                }
+            } else {
+                inputShape = extractShapeFromNode(node, name_to_input, name_to_initializer, inputName);
+            }
+            
+            if (!inputShape.empty()) {
+                // Store input shape for backward pass
+                std::vector<int64_t> shape_vec;
+                for (unsigned s : inputShape) {
+                    shape_vec.push_back(s);
+                }
+                boundedNode->setInputShape(shape_vec);
+                
+                // Set input size
+                unsigned inputSize = computeTensorSize(inputShape);
+                boundedNode->setInputSize(inputSize);
+                
+                // Compute output size (slice reduces size along one axis)
+                if (axis >= 0 && axis < (int)inputShape.size()) {
+                    int actual_start = start < 0 ? start + inputShape[axis] : start;
+                    int actual_end = end < 0 ? end + inputShape[axis] : end;
+                    actual_end = std::min(actual_end, (int)inputShape[axis]);
+                    int slice_length = std::max(0, actual_end - actual_start);
+                    
+                    unsigned outputSize = inputSize / inputShape[axis] * slice_length;
+                    boundedNode->setOutputSize(outputSize);
+                }
+            }
+        }
+        
         return boundedNode;
     }
 

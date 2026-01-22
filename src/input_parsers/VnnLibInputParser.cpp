@@ -2,7 +2,6 @@
 #include "File.h"
 #include "InputParserError.h"
 #include "MStringf.h"
-#include "FloatUtils.h"
 
 #include <boost/regex.hpp>
 #include <iostream>
@@ -255,7 +254,8 @@ int VnnLibInputParser::parseCondition(int index,
 
     const String &op = tokens[index];
 
-    if (op == "and")
+    // Case-insensitive check for "and"
+    if (op == "and" || op == "AND" || op == "And")
     {
         // Parse multiple conditions
         ++index;
@@ -448,4 +448,904 @@ BoundedTensor<torch::Tensor> VnnLibInputParser::parseInputBounds(const String &v
 //     std::cout << "[VnnLibInputParser] ========== VNN-LIB Parsing Complete ==========" << std::endl << std::endl;
 
     return BoundedTensor<torch::Tensor>(lowerBounds, upperBounds);
+}
+
+// Check if variable name is an output variable (Y_i format)
+bool VnnLibInputParser::isOutputVariable(const String &varName)
+{
+    List<String> parts = varName.tokenize("_");
+    if (parts.size() != 2)
+        return false;
+
+    return parts.front() == "Y";
+}
+
+// Check if a token is a scalar value (number)
+bool VnnLibInputParser::isScalar(const String &token)
+{
+    if (token.length() == 0)
+        return false;
+
+    unsigned start = 0;
+    // Handle optional negative sign
+    if (token[0] == '-')
+    {
+        if (token.length() == 1)
+            return false;
+        start = 1;
+    }
+
+    bool hasDecimal = false;
+    bool hasDigit = false;
+    for (unsigned i = start; i < token.length(); ++i)
+    {
+        char c = token[i];
+        if (c == '.')
+        {
+            if (hasDecimal)
+                return false;
+            hasDecimal = true;
+        }
+        else if (std::isdigit(c))
+        {
+            hasDigit = true;
+        }
+        else if (c == 'e' || c == 'E')
+        {
+            // Handle scientific notation: check rest is valid exponent
+            if (!hasDigit || i + 1 >= token.length())
+                return false;
+            unsigned expStart = i + 1;
+            if (token[expStart] == '-' || token[expStart] == '+')
+            {
+                ++expStart;
+            }
+            for (unsigned j = expStart; j < token.length(); ++j)
+            {
+                if (!std::isdigit(token[j]))
+                    return false;
+            }
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    return hasDigit;
+}
+
+// Parse tokens and extract output constraints
+void VnnLibInputParser::parseOutputTokens(const Vector<String> &tokens,
+                                          NLR::OutputConstraintSet &outputConstraints)
+{
+    int index = 0;
+    while ((unsigned)index < tokens.size())
+    {
+        if (tokens[index] == "(")
+        {
+            index = parseOutputCommand(index + 1, tokens, outputConstraints);
+            if ((unsigned)index < tokens.size() && tokens[index] == ")")
+            {
+                ++index;
+            }
+        }
+        else
+        {
+            ++index;
+        }
+    }
+}
+
+// Parse a command for output constraints
+int VnnLibInputParser::parseOutputCommand(int index,
+                                          const Vector<String> &tokens,
+                                          NLR::OutputConstraintSet &outputConstraints)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    const String &command = tokens[index];
+
+    if (command == "assert")
+    {
+        return parseOutputAssert(index + 1, tokens, outputConstraints);
+    }
+
+    // Skip non-assert commands (like declare-const) - just find matching closing paren
+    int depth = 1;
+    ++index;
+    while ((unsigned)index < tokens.size() && depth > 0)
+    {
+        if (tokens[index] == "(")
+            ++depth;
+        else if (tokens[index] == ")")
+            --depth;
+        ++index;
+    }
+    return index - 1;
+}
+
+// Parse an assert command for output constraints
+int VnnLibInputParser::parseOutputAssert(int index,
+                                         const Vector<String> &tokens,
+                                         NLR::OutputConstraintSet &outputConstraints)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    if (tokens[index] == "(")
+    {
+        return parseOutputCondition(index + 1, tokens, outputConstraints);
+    }
+
+    return index;
+}
+
+// Parse a linear expression of output variables
+// Handles: Y_i, (+ expr expr ...), (* coeff Y_i), (- Y_i Y_j), scalars
+int VnnLibInputParser::parseLinearExpression(int index,
+                                             const Vector<String> &tokens,
+                                             Vector<NLR::OutputTerm> &terms,
+                                             double &scalarSum)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    const String &token = tokens[index];
+
+    // Case 1: Simple output variable Y_i
+    if (isOutputVariable(token))
+    {
+        int varIndex = extractVariableIndex(token);
+        terms.append(NLR::OutputTerm(varIndex, 1.0));
+        return index + 1;
+    }
+
+    // Case 2: Scalar value - accumulate it in scalarSum
+    if (isScalar(token))
+    {
+        scalarSum += extractScalar(token);
+        return index + 1;
+    }
+
+    // Case 3: Parenthesized expression
+    if (token == "(")
+    {
+        ++index;
+        if ((unsigned)index >= tokens.size())
+            return index;
+
+        const String &op = tokens[index];
+        ++index;
+
+        if (op == "+")
+        {
+            // Addition: (+ expr1 expr2 ...)
+            // Parse all sub-expressions and collect their terms and scalars
+            while ((unsigned)index < tokens.size() && tokens[index] != ")")
+            {
+                index = parseLinearExpression(index, tokens, terms, scalarSum);
+            }
+            if ((unsigned)index < tokens.size() && tokens[index] == ")")
+                ++index;
+            return index;
+        }
+        else if (op == "-")
+        {
+            // Subtraction: (- expr1 expr2)
+            // First expression has positive coefficient
+            Vector<NLR::OutputTerm> firstTerms;
+            double firstScalar = 0.0;
+            index = parseLinearExpression(index, tokens, firstTerms, firstScalar);
+            for (unsigned i = 0; i < firstTerms.size(); ++i)
+            {
+                terms.append(firstTerms[i]);
+            }
+            scalarSum += firstScalar;
+
+            // Second expression has negative coefficient
+            if ((unsigned)index < tokens.size() && tokens[index] != ")")
+            {
+                Vector<NLR::OutputTerm> secondTerms;
+                double secondScalar = 0.0;
+                index = parseLinearExpression(index, tokens, secondTerms, secondScalar);
+                for (unsigned i = 0; i < secondTerms.size(); ++i)
+                {
+                    NLR::OutputTerm negatedTerm = secondTerms[i];
+                    negatedTerm.coefficient *= -1.0;
+                    terms.append(negatedTerm);
+                }
+                // Subtract second scalar
+                scalarSum -= secondScalar;
+            }
+
+            // Skip any remaining terms and closing paren
+            while ((unsigned)index < tokens.size() && tokens[index] != ")")
+                ++index;
+            if ((unsigned)index < tokens.size() && tokens[index] == ")")
+                ++index;
+            return index;
+        }
+        else if (op == "*")
+        {
+            // Multiplication: (* coeff Y_i) or (* Y_i coeff)
+            double coefficient = 1.0;
+            int varIndex = -1;
+
+            while ((unsigned)index < tokens.size() && tokens[index] != ")")
+            {
+                const String &subToken = tokens[index];
+
+                if (isScalar(subToken))
+                {
+                    coefficient *= extractScalar(subToken);
+                    ++index;
+                }
+                else if (isOutputVariable(subToken))
+                {
+                    varIndex = extractVariableIndex(subToken);
+                    ++index;
+                }
+                else if (subToken == "(")
+                {
+                    // Nested expression within multiplication
+                    Vector<NLR::OutputTerm> subTerms;
+                    double subScalar = 0.0;
+                    index = parseLinearExpression(index, tokens, subTerms, subScalar);
+                    // Multiply all sub-terms by current coefficient
+                    for (unsigned i = 0; i < subTerms.size(); ++i)
+                    {
+                        NLR::OutputTerm scaledTerm = subTerms[i];
+                        scaledTerm.coefficient *= coefficient;
+                        terms.append(scaledTerm);
+                    }
+                    // Multiply scalar by coefficient and add to scalarSum
+                    scalarSum += subScalar * coefficient;
+                    coefficient = 1.0; // Reset after applying
+                    varIndex = -1; // Mark as already added
+                }
+                else
+                {
+                    ++index;
+                }
+            }
+
+            if (varIndex >= 0)
+            {
+                terms.append(NLR::OutputTerm(varIndex, coefficient));
+            }
+
+            if ((unsigned)index < tokens.size() && tokens[index] == ")")
+                ++index;
+            return index;
+        }
+        else
+        {
+            // Unknown operator, skip to closing paren
+            int depth = 1;
+            while ((unsigned)index < tokens.size() && depth > 0)
+            {
+                if (tokens[index] == "(")
+                    ++depth;
+                else if (tokens[index] == ")")
+                    --depth;
+                ++index;
+            }
+            return index;
+        }
+    }
+
+    // Unknown token, skip
+    return index + 1;
+}
+
+// Parse an output condition and add constraints
+int VnnLibInputParser::parseOutputCondition(int index,
+                                            const Vector<String> &tokens,
+                                            NLR::OutputConstraintSet &outputConstraints)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    const String &op = tokens[index];
+
+    // Case-insensitive check for "and"
+    if (op == "and" || op == "AND" || op == "And")
+    {
+        // Parse multiple conditions within 'and'
+        ++index;
+        while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        {
+            if (tokens[index] == "(")
+            {
+                index = parseOutputCondition(index + 1, tokens, outputConstraints);
+            }
+            else
+            {
+                ++index;
+            }
+        }
+        return index + 1; // Skip closing )
+    }
+    // Case-insensitive check for "or"
+    else if (op == "or" || op == "OR" || op == "Or")
+    {
+        // Parse OR disjunction: collect each branch separately
+        // Each branch can be a single constraint or an AND conjunction
+        ++index;
+        
+        unsigned outputDim = outputConstraints.getOutputDimension();
+        Vector<Vector<NLR::OutputConstraint>> branches;
+        
+        while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        {
+            if (tokens[index] == "(")
+            {
+                // Parse a single branch (can be AND or single constraint)
+                Vector<NLR::OutputConstraint> branchConstraints;
+                index = parseOutputBranch(index + 1, tokens, branchConstraints, outputDim);
+                
+                if (branchConstraints.size() > 0)
+                {
+                    branches.append(branchConstraints);
+                }
+            }
+            else
+            {
+                ++index;
+            }
+        }
+        
+        // Add all branches as OR branches
+        for (unsigned i = 0; i < branches.size(); ++i)
+        {
+            outputConstraints.addORBranch(branches[i]);
+        }
+        
+        return index + 1;
+    }
+    else if (op == "<=" || op == ">=")
+    {
+        ++index;
+        if ((unsigned)index >= tokens.size())
+            return index;
+
+        // Parse LHS and RHS of the comparison
+        Vector<NLR::OutputTerm> lhsTerms;
+        Vector<NLR::OutputTerm> rhsTerms;
+        double lhsScalar = 0.0;
+        double rhsScalar = 0.0;
+
+        // Parse LHS
+        if (tokens[index] == "(")
+        {
+            index = parseLinearExpression(index, tokens, lhsTerms, lhsScalar);
+        }
+        else if (isOutputVariable(tokens[index]))
+        {
+            int varIndex = extractVariableIndex(tokens[index]);
+            lhsTerms.append(NLR::OutputTerm(varIndex, 1.0));
+            ++index;
+        }
+        else if (isScalar(tokens[index]))
+        {
+            lhsScalar = extractScalar(tokens[index]);
+            ++index;
+        }
+        else
+        {
+            ++index;
+        }
+
+        // Parse RHS
+        if ((unsigned)index < tokens.size() && tokens[index] != ")")
+        {
+            if (tokens[index] == "(")
+            {
+                index = parseLinearExpression(index, tokens, rhsTerms, rhsScalar);
+            }
+            else if (isOutputVariable(tokens[index]))
+            {
+                int varIndex = extractVariableIndex(tokens[index]);
+                rhsTerms.append(NLR::OutputTerm(varIndex, 1.0));
+                ++index;
+            }
+            else if (isScalar(tokens[index]))
+            {
+                rhsScalar = extractScalar(tokens[index]);
+                ++index;
+            }
+            else
+            {
+                ++index;
+            }
+        }
+
+        // Check if this constraint involves output variables
+        bool hasOutputVar = (lhsTerms.size() > 0 || rhsTerms.size() > 0);
+
+        if (hasOutputVar)
+        {
+            NLR::OutputConstraint constraint;
+
+            // Normalize all constraints to: C*y <= threshold form
+            // For >= constraints: negate coefficients and threshold to get -C*y <= -threshold
+            // For <= constraints: keep as-is
+
+            // Add LHS terms
+            for (unsigned i = 0; i < lhsTerms.size(); ++i)
+            {
+                constraint.terms.append(lhsTerms[i]);
+            }
+
+            // Subtract RHS terms (negate coefficients)
+            for (unsigned i = 0; i < rhsTerms.size(); ++i)
+            {
+                NLR::OutputTerm negated = rhsTerms[i];
+                negated.coefficient *= -1.0;
+                constraint.terms.append(negated);
+            }
+
+            // Compute threshold: rhsScalar - lhsScalar
+            double threshold = rhsScalar - lhsScalar;
+
+            // Normalize >= to <= form by negating coefficients and threshold
+            if (op == ">=")
+            {
+                // C*y >= threshold -> -C*y <= -threshold
+                for (unsigned i = 0; i < constraint.terms.size(); ++i)
+                {
+                    constraint.terms[i].coefficient *= -1.0;
+                }
+                threshold = -threshold;
+            }
+            // For <=, keep as-is (already in correct form)
+
+            constraint.threshold = threshold;
+            outputConstraints.addConstraint(constraint);
+        }
+
+        // Skip to closing paren
+        while ((unsigned)index < tokens.size() && tokens[index] != ")")
+            ++index;
+        return index + 1;
+    }
+
+    // Unknown operator, skip to closing paren
+    while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        ++index;
+    return index + 1;
+}
+
+// Parse a single OR branch (which may be an AND conjunction or a single constraint)
+int VnnLibInputParser::parseOutputBranch(int index,
+                                          const Vector<String> &tokens,
+                                          Vector<NLR::OutputConstraint> &branchConstraints,
+                                          unsigned outputDim)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    const String &op = tokens[index];
+
+    // Case-insensitive check for "and"
+    if (op == "and" || op == "AND" || op == "And")
+    {
+        // Parse AND conjunction: collect all constraints in this branch
+        ++index;
+        while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        {
+            if (tokens[index] == "(")
+            {
+                // Parse a single constraint within the AND
+                index = parseOutputBranch(index + 1, tokens, branchConstraints, outputDim);
+            }
+            else
+            {
+                ++index;
+            }
+        }
+        return index + 1; // Skip closing )
+    }
+    else if (op == "<=" || op == ">=")
+    {
+        // Parse a single constraint
+        ++index;
+        if ((unsigned)index >= tokens.size())
+            return index;
+
+        // Parse LHS and RHS of the comparison
+        Vector<NLR::OutputTerm> lhsTerms;
+        Vector<NLR::OutputTerm> rhsTerms;
+        double lhsScalar = 0.0;
+        double rhsScalar = 0.0;
+
+        // Parse LHS
+        if (tokens[index] == "(")
+        {
+            index = parseLinearExpression(index, tokens, lhsTerms, lhsScalar);
+        }
+        else if (isOutputVariable(tokens[index]))
+        {
+            int varIndex = extractVariableIndex(tokens[index]);
+            lhsTerms.append(NLR::OutputTerm(varIndex, 1.0));
+            ++index;
+        }
+        else if (isScalar(tokens[index]))
+        {
+            lhsScalar = extractScalar(tokens[index]);
+            ++index;
+        }
+        else
+        {
+            ++index;
+        }
+
+        // Parse RHS
+        if ((unsigned)index < tokens.size() && tokens[index] != ")")
+        {
+            if (tokens[index] == "(")
+            {
+                index = parseLinearExpression(index, tokens, rhsTerms, rhsScalar);
+            }
+            else if (isOutputVariable(tokens[index]))
+            {
+                int varIndex = extractVariableIndex(tokens[index]);
+                rhsTerms.append(NLR::OutputTerm(varIndex, 1.0));
+                ++index;
+            }
+            else if (isScalar(tokens[index]))
+            {
+                rhsScalar = extractScalar(tokens[index]);
+                ++index;
+            }
+            else
+            {
+                ++index;
+            }
+        }
+
+        // Check if this constraint involves output variables
+        bool hasOutputVar = (lhsTerms.size() > 0 || rhsTerms.size() > 0);
+
+        if (hasOutputVar)
+        {
+            NLR::OutputConstraint constraint;
+
+            // Normalize all constraints to: C*y <= threshold form
+            // For >= constraints: negate coefficients and threshold to get -C*y <= -threshold
+            // For <= constraints: keep as-is
+
+            // Add LHS terms
+            for (unsigned i = 0; i < lhsTerms.size(); ++i)
+            {
+                constraint.terms.append(lhsTerms[i]);
+            }
+
+            // Subtract RHS terms (negate coefficients)
+            for (unsigned i = 0; i < rhsTerms.size(); ++i)
+            {
+                NLR::OutputTerm negated = rhsTerms[i];
+                negated.coefficient *= -1.0;
+                constraint.terms.append(negated);
+            }
+
+            // Compute threshold: rhsScalar - lhsScalar
+            double threshold = rhsScalar - lhsScalar;
+
+            // Normalize >= to <= form by negating coefficients and threshold
+            if (op == ">=")
+            {
+                // C*y >= threshold -> -C*y <= -threshold
+                for (unsigned i = 0; i < constraint.terms.size(); ++i)
+                {
+                    constraint.terms[i].coefficient *= -1.0;
+                }
+                threshold = -threshold;
+            }
+            // For <=, keep as-is (already in correct form)
+
+            constraint.threshold = threshold;
+            branchConstraints.append(constraint);
+        }
+
+        // Skip to closing paren
+        while ((unsigned)index < tokens.size() && tokens[index] != ")")
+            ++index;
+        return index + 1;
+    }
+
+    // Unknown operator, skip to closing paren
+    while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        ++index;
+    return index + 1;
+}
+
+// Parse output constraints from a VNN-LIB file
+NLR::OutputConstraintSet VnnLibInputParser::parseOutputConstraints(const String &vnnlibFilePath,
+                                                                    unsigned expectedOutputSize)
+{
+    // Read and tokenize the file
+    String content = readVnnlibFile(vnnlibFilePath);
+    Vector<String> tokens = tokenize(content);
+
+    // Parse tokens to extract output constraints
+    NLR::OutputConstraintSet outputConstraints;
+    outputConstraints.setOutputDimension(expectedOutputSize);
+    parseOutputTokens(tokens, outputConstraints);
+
+    return outputConstraints;
+}
+
+// Parse tokens for both input bounds and output constraints
+void VnnLibInputParser::parseTokensBoth(const Vector<String> &tokens,
+                                        Vector<InputBoundInfo> &inputBounds,
+                                        NLR::OutputConstraintSet &outputConstraints)
+{
+    int index = 0;
+    while ((unsigned)index < tokens.size())
+    {
+        if (tokens[index] == "(")
+        {
+            index = parseCommandBoth(index + 1, tokens, inputBounds, outputConstraints);
+            if ((unsigned)index < tokens.size() && tokens[index] == ")")
+            {
+                ++index;
+            }
+        }
+        else
+        {
+            ++index;
+        }
+    }
+}
+
+// Parse a command for both inputs and outputs
+int VnnLibInputParser::parseCommandBoth(int index,
+                                        const Vector<String> &tokens,
+                                        Vector<InputBoundInfo> &inputBounds,
+                                        NLR::OutputConstraintSet &outputConstraints)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    const String &command = tokens[index];
+
+    if (command == "declare-const")
+    {
+        return parseDeclareConst(index + 1, tokens, inputBounds);
+    }
+    else if (command == "assert")
+    {
+        return parseAssertBoth(index + 1, tokens, inputBounds, outputConstraints);
+    }
+
+    // Skip unknown commands
+    int depth = 1;
+    ++index;
+    while ((unsigned)index < tokens.size() && depth > 0)
+    {
+        if (tokens[index] == "(")
+            ++depth;
+        else if (tokens[index] == ")")
+            --depth;
+        ++index;
+    }
+    return index - 1;
+}
+
+// Parse an assert command for both inputs and outputs
+int VnnLibInputParser::parseAssertBoth(int index,
+                                       const Vector<String> &tokens,
+                                       Vector<InputBoundInfo> &inputBounds,
+                                       NLR::OutputConstraintSet &outputConstraints)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    if (tokens[index] == "(")
+    {
+        return parseConditionBoth(index + 1, tokens, inputBounds, outputConstraints);
+    }
+
+    return index;
+}
+
+// Parse a condition for both inputs and outputs
+int VnnLibInputParser::parseConditionBoth(int index,
+                                          const Vector<String> &tokens,
+                                          Vector<InputBoundInfo> &inputBounds,
+                                          NLR::OutputConstraintSet &outputConstraints)
+{
+    if ((unsigned)index >= tokens.size())
+        return index;
+
+    const String &op = tokens[index];
+
+    // Case-insensitive check for "and"
+    if (op == "and" || op == "AND" || op == "And")
+    {
+        ++index;
+        while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        {
+            if (tokens[index] == "(")
+            {
+                index = parseConditionBoth(index + 1, tokens, inputBounds, outputConstraints);
+            }
+            else
+            {
+                ++index;
+            }
+        }
+        return index + 1;
+    }
+    // Case-insensitive check for "or"
+    else if (op == "or" || op == "OR" || op == "Or")
+    {
+        // Check if this OR involves output variables by peeking ahead
+        int peekIndex = index + 1;
+        bool hasOutputVar = false;
+        int depth = 1;
+        while ((unsigned)peekIndex < tokens.size() && depth > 0)
+        {
+            if (tokens[peekIndex] == "(")
+                ++depth;
+            else if (tokens[peekIndex] == ")")
+                --depth;
+            else if (isOutputVariable(tokens[peekIndex]))
+                hasOutputVar = true;
+            ++peekIndex;
+        }
+
+        if (hasOutputVar)
+        {
+            // This OR involves output variables - use output constraint parsing
+            // Parse OR disjunction: collect each branch separately
+            ++index;
+            
+            unsigned outputDim = outputConstraints.getOutputDimension();
+            Vector<Vector<NLR::OutputConstraint>> branches;
+            
+            while ((unsigned)index < tokens.size() && tokens[index] != ")")
+            {
+                if (tokens[index] == "(")
+                {
+                    // Parse a single branch (can be AND or single constraint)
+                    Vector<NLR::OutputConstraint> branchConstraints;
+                    index = parseOutputBranch(index + 1, tokens, branchConstraints, outputDim);
+                    
+                    if (branchConstraints.size() > 0)
+                    {
+                        branches.append(branchConstraints);
+                    }
+                }
+                else
+                {
+                    ++index;
+                }
+            }
+            
+            // Add all branches as OR branches
+            for (unsigned i = 0; i < branches.size(); ++i)
+            {
+                outputConstraints.addORBranch(branches[i]);
+            }
+            
+            return index + 1;
+        }
+        else
+        {
+            // This OR only involves input variables - handle as before
+            ++index;
+            while ((unsigned)index < tokens.size() && tokens[index] != ")")
+            {
+                if (tokens[index] == "(")
+                {
+                    index = parseConditionBoth(index + 1, tokens, inputBounds, outputConstraints);
+                }
+                else
+                {
+                    ++index;
+                }
+            }
+            return index + 1;
+        }
+    }
+    else if (op == "<=" || op == ">=")
+    {
+        // Look ahead to determine if this involves input or output variables
+        int peekIndex = index + 1;
+        bool hasInputVar = false;
+        bool hasOutputVar = false;
+
+        // Quick scan to check variable types
+        int depth = 1;
+        while ((unsigned)peekIndex < tokens.size() && depth > 0)
+        {
+            if (tokens[peekIndex] == "(")
+                ++depth;
+            else if (tokens[peekIndex] == ")")
+                --depth;
+            else if (isInputVariable(tokens[peekIndex]))
+                hasInputVar = true;
+            else if (isOutputVariable(tokens[peekIndex]))
+                hasOutputVar = true;
+            ++peekIndex;
+        }
+
+        // Route to appropriate handler
+        if (hasInputVar && !hasOutputVar)
+        {
+            // Input-only constraint - use input parsing
+            return parseCondition(index, tokens, inputBounds);
+        }
+        else if (hasOutputVar && !hasInputVar)
+        {
+            // Output-only constraint - use output parsing
+            // Create a temporary constraint set and add to the main one
+            return parseOutputCondition(index, tokens, outputConstraints);
+        }
+        else
+        {
+            // Mixed or neither - skip to closing paren
+            ++index;
+            while ((unsigned)index < tokens.size() && tokens[index] != ")")
+                ++index;
+            return index + 1;
+        }
+    }
+
+    // Unknown operator
+    while ((unsigned)index < tokens.size() && tokens[index] != ")")
+        ++index;
+    return index + 1;
+}
+
+// Parse both input bounds and output constraints from a VNN-LIB file
+std::pair<BoundedTensor<torch::Tensor>, NLR::OutputConstraintSet>
+VnnLibInputParser::parseInputAndOutputConstraints(const String &vnnlibFilePath,
+                                                  unsigned expectedInputSize,
+                                                  unsigned expectedOutputSize)
+{
+    // Read and tokenize the file once
+    String content = readVnnlibFile(vnnlibFilePath);
+    Vector<String> tokens = tokenize(content);
+
+    // Parse both simultaneously
+    Vector<InputBoundInfo> inputBounds;
+    NLR::OutputConstraintSet outputConstraints;
+    outputConstraints.setOutputDimension(expectedOutputSize);
+
+    parseTokensBoth(tokens, inputBounds, outputConstraints);
+
+    // Convert input bounds to tensors
+    while (inputBounds.size() < expectedInputSize)
+    {
+        inputBounds.append(InputBoundInfo());
+    }
+
+    torch::Tensor lowerBounds = torch::zeros({(long)expectedInputSize}, torch::kFloat64);
+    torch::Tensor upperBounds = torch::zeros({(long)expectedInputSize}, torch::kFloat64);
+
+    for (unsigned i = 0; i < expectedInputSize; ++i)
+    {
+        if (i < inputBounds.size())
+        {
+            lowerBounds[i] = inputBounds[i].lowerBound;
+            upperBounds[i] = inputBounds[i].upperBound;
+        }
+        else
+        {
+            lowerBounds[i] = -std::numeric_limits<double>::infinity();
+            upperBounds[i] = std::numeric_limits<double>::infinity();
+        }
+    }
+
+    lowerBounds = lowerBounds.to(torch::kFloat32);
+    upperBounds = upperBounds.to(torch::kFloat32);
+
+    BoundedTensor<torch::Tensor> inputBoundsTensor(lowerBounds, upperBounds);
+
+    return std::make_pair(inputBoundsTensor, outputConstraints);
 }

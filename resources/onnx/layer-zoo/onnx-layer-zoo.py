@@ -1,4 +1,3 @@
-
 import numpy as np
 import onnx
 from onnx import TensorProto
@@ -6,23 +5,17 @@ import onnxruntime
 import os
 import sys
 
-##############
-## Settings ##
-##############
-
 producer_name = "onnx-layer-zoo"
 input_name = "x"
 output_name = "y"
-
-####################
-## Helper methods ##
-####################
 
 def make_network(name, node, input_shape, output_shape, aux_nodes):
     input = [onnx.helper.make_tensor_value_info(input_name, onnx.TensorProto.FLOAT, input_shape)]
     output = [onnx.helper.make_tensor_value_info(output_name, onnx.TensorProto.FLOAT, output_shape)]
     graph = onnx.helper.make_graph([node] + aux_nodes, name, input, output)
-    model = onnx.helper.make_model(graph, producer_name=producer_name)
+    # Set IR version and opset version for compatibility with onnxruntime
+    opset_import = onnx.helper.make_opsetid("", 21)  # Use opset 21 for broad compatibility
+    model = onnx.helper.make_model(graph, producer_name=producer_name, ir_version=9, opset_imports=[opset_import])
     print(f"Generated {name}.onnx")
     output_dir = os.path.dirname(sys.argv[0])
     network_path = os.path.join(output_dir ,f"{name}.onnx")
@@ -72,10 +65,6 @@ def make_constant_bool_node(name, values):
             vals=value_array.flatten(),
         ),
     )
-
-############
-## Layers ##
-############
 
 def constant_node():
     values = np.array([[0, 0.5],[1, 1.5]], dtype=np.float32)
@@ -343,10 +332,6 @@ def dropout_training_mode_true_node():
         outputs=[output_name]
     )
     return ("dropout_training_mode_true", node, [2,2], [2,2], [ratio, trainingMode])
-
-##########
-## Main ##
-##########
 
 if __name__ == "__main__":
     make_network(*constant_node())

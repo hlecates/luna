@@ -1,0 +1,8 @@
+include lirpapy/README.md
+include lirpapy/requirements.txt
+include lirpapy/*.py
+include lirpapy/*.cpp
+include lirpapy/CMakeLists.txt
+recursive-include src *.h *.cpp
+recursive-include tools *
+include CMakeLists.txt

@@ -1,2 +1,3 @@
-onnx == 1.12.0
+onnx
+onnxruntime
 numpy >= 1.22.0

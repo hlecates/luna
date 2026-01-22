@@ -1,8 +1,3 @@
-# ============================================================================
-# LIRPA .gitignore
-# Prevents tracking of build artifacts, downloaded dependencies, and IDE files
-# ============================================================================
-
 # Build artifacts
 *.d
 *.o
@@ -156,6 +151,8 @@ callgrind.out.*
 /resources/onnx/*.onnx
 !/resources/onnx/small_*.onnx
 !/resources/onnx/example_*.onnx
+
+/resources/regular_benchmarks
 
 # VNN-LIB property files (keep examples)
 # Uncomment if you have large property files

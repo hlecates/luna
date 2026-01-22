@@ -4,6 +4,7 @@
 #include "MString.h"
 #include "Vector.h"
 #include "BoundedTensor.h"
+#include "OutputConstraint.h"
 
 // Undefine macros to avoid conflicts with PyTorch
 #ifdef Warning
@@ -14,6 +15,7 @@
 #endif
 
 #include <torch/torch.h>
+#include <utility>
 
 class VnnLibInputParser
 {
@@ -36,6 +38,38 @@ public:
      */
     static BoundedTensor<torch::Tensor> parseInputBounds(const String &vnnlibFilePath,
                                                           unsigned expectedInputSize);
+
+    /**
+     * Parse output constraints from a VNN-LIB file.
+     *
+     * @param vnnlibFilePath Path to the .vnnlib file
+     * @param expectedOutputSize Expected number of output variables
+     * @return OutputConstraintSet containing parsed output constraints
+     *
+     * The parser extracts output constraints (Y_i variables) and converts them
+     * to a format suitable for specification matrix generation. It handles:
+     * - Simple bounds: (assert (>= Y_0 3.5))
+     * - Comparisons: (assert (<= Y_0 Y_1)) -> Y_0 - Y_1 <= 0
+     * - Linear combinations: (assert (>= (+ Y_0 (* -1 Y_1)) 0)) -> Y_0 - Y_1 >= 0
+     */
+    static NLR::OutputConstraintSet parseOutputConstraints(const String &vnnlibFilePath,
+                                                           unsigned expectedOutputSize);
+
+    /**
+     * Parse both input bounds and output constraints from a VNN-LIB file.
+     *
+     * @param vnnlibFilePath Path to the .vnnlib file
+     * @param expectedInputSize Expected number of input variables
+     * @param expectedOutputSize Expected number of output variables
+     * @return Pair of (input bounds, output constraints)
+     *
+     * This is more efficient than calling parseInputBounds and parseOutputConstraints
+     * separately as it only reads and tokenizes the file once.
+     */
+    static std::pair<BoundedTensor<torch::Tensor>, NLR::OutputConstraintSet>
+    parseInputAndOutputConstraints(const String &vnnlibFilePath,
+                                   unsigned expectedInputSize,
+                                   unsigned expectedOutputSize);
 
 private:
     /**
@@ -108,9 +142,102 @@ private:
     static bool isInputVariable(const String &varName);
 
     /**
+     * Check if a variable name represents an output (Y_i)
+     */
+    static bool isOutputVariable(const String &varName);
+
+    /**
      * Extract scalar value from string
      */
     static double extractScalar(const String &token);
+
+    /**
+     * Parse the token stream and extract output constraints.
+     * Similar to parseTokens but focuses on Y_i variables.
+     */
+    static void parseOutputTokens(const Vector<String> &tokens,
+                                  NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse a single command for output constraints (assert only)
+     */
+    static int parseOutputCommand(int index,
+                                  const Vector<String> &tokens,
+                                  NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse an assert command for output constraints
+     */
+    static int parseOutputAssert(int index,
+                                 const Vector<String> &tokens,
+                                 NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse an output condition (<=, >=, and, or) and add constraints
+     */
+    static int parseOutputCondition(int index,
+                                    const Vector<String> &tokens,
+                                    NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse a single OR branch (which may be an AND conjunction or a single constraint)
+     * and return the constraints from that branch.
+     */
+    static int parseOutputBranch(int index,
+                                  const Vector<String> &tokens,
+                                  Vector<NLR::OutputConstraint> &branchConstraints,
+                                  unsigned outputDim);
+
+    /**
+     * Parse a linear expression of output variables.
+     * Handles forms like: Y_i, (+ Y_i Y_j), (+ Y_i 2.0), (* coeff Y_i)
+     *
+     * @param index Current token index (pointing to start of expression)
+     * @param tokens Token stream
+     * @param terms Output vector to receive parsed terms
+     * @param scalarSum Output parameter to accumulate scalar values found in expression
+     * @return Updated token index after parsing
+     */
+    static int parseLinearExpression(int index,
+                                     const Vector<String> &tokens,
+                                     Vector<NLR::OutputTerm> &terms,
+                                     double &scalarSum);
+
+    /**
+     * Check if a token is a scalar value (number)
+     */
+    static bool isScalar(const String &token);
+
+    /**
+     * Parse tokens for both input bounds and output constraints simultaneously.
+     */
+    static void parseTokensBoth(const Vector<String> &tokens,
+                                Vector<InputBoundInfo> &inputBounds,
+                                NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse a command for both inputs and outputs
+     */
+    static int parseCommandBoth(int index,
+                                const Vector<String> &tokens,
+                                Vector<InputBoundInfo> &inputBounds,
+                                NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse an assert command for both inputs and outputs
+     */
+    static int parseAssertBoth(int index,
+                               const Vector<String> &tokens,
+                               Vector<InputBoundInfo> &inputBounds,
+                               NLR::OutputConstraintSet &outputConstraints);
+
+    /**
+     * Parse a condition for both inputs and outputs
+     */
+    static int parseConditionBoth(int index,
+                                  const Vector<String> &tokens,
+                                  Vector<InputBoundInfo> &inputBounds,
+                                  NLR::OutputConstraintSet &outputConstraints);
 };
 
 #endif // __VnnLibInputParser_h__

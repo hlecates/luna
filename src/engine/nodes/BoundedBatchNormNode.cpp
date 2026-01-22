@@ -1,0 +1,520 @@
+#include "BoundedBatchNormNode.h"
+#include <stdexcept>
+#include <sstream>
+
+// Undefine Warning macro to avoid conflict with PyTorch
+#ifdef Warning
+#undef Warning
+#endif
+
+#include <torch/torch.h>
+
+// Redefine Warning macro for CVC4 compatibility
+#ifndef Warning
+#define Warning (! ::CVC4::WarningChannel.isOn()) ? ::CVC4::nullCvc4Stream : ::CVC4::WarningChannel
+#endif
+
+namespace NLR {
+
+using torch::indexing::Slice;
+
+BoundedBatchNormNode::BoundedBatchNormNode(
+    const torch::Tensor& scale,
+    const torch::Tensor& B,
+    const torch::Tensor& mean,
+    const torch::Tensor& var,
+    float eps,
+    const String& name
+)
+    : _scale(scale.detach().to(torch::kFloat32).contiguous()),
+      _bias(B.detach().to(torch::kFloat32).contiguous()),
+      _mean(mean.detach().to(torch::kFloat32).contiguous()),
+      _var(var.detach().to(torch::kFloat32).contiguous()),
+      _eps(eps) {
+    _nodeName = name;
+    _nodeIndex = 0;
+    _input_size = 0;
+    _output_size = 0;
+
+    // Validate parameter shapes: all must be 1D and same length (channels)
+    if (_scale.defined() && _scale.dim() != 1) {
+        throw std::runtime_error("BoundedBatchNormNode: scale must be 1D");
+    }
+    if (_bias.defined() && _bias.dim() != 1) {
+        throw std::runtime_error("BoundedBatchNormNode: bias must be 1D");
+    }
+    if (_mean.defined() && _mean.dim() != 1) {
+        throw std::runtime_error("BoundedBatchNormNode: mean must be 1D");
+    }
+    if (_var.defined() && _var.dim() != 1) {
+        throw std::runtime_error("BoundedBatchNormNode: var must be 1D");
+    }
+    auto c = _scale.numel();
+    if (_bias.numel() != c || _mean.numel() != c || _var.numel() != c) {
+        throw std::runtime_error("BoundedBatchNormNode: parameter channel sizes mismatch");
+    }
+}
+
+torch::Tensor BoundedBatchNormNode::tmp_weight(const torch::Tensor& like) const {
+    // tmp_weight = scale / sqrt(var + eps)
+    auto device = like.defined() ? like.device() : _scale.device();
+    auto dtype = torch::kFloat32;
+    auto scale = _scale.to(device).to(dtype);
+    auto var = _var.to(device).to(dtype);
+    return scale / torch::sqrt(var + _eps);
+}
+
+torch::Tensor BoundedBatchNormNode::tmp_bias(const torch::Tensor& like) const {
+    // tmp_bias = B - mean * tmp_weight
+    auto device = like.defined() ? like.device() : _scale.device();
+    auto dtype = torch::kFloat32;
+    auto B = _bias.to(device).to(dtype);
+    auto mean = _mean.to(device).to(dtype);
+    auto w = tmp_weight(like);
+    return B - mean * w;
+}
+
+torch::Tensor BoundedBatchNormNode::broadcast_channel_param(const torch::Tensor& param, const torch::Tensor& x) const {
+    if (!param.defined()) return param;
+    if (!x.defined()) return param;
+    // ONNX BatchNormalization uses channel dim = 1, x shape [N, C, ...].
+    // However, during IBP/CROWN we sometimes see flattened activations:
+    // - x: [C*H*W] or [N, C*H*W]
+    // In those cases we must expand per-channel params across the spatial dimension.
+    int64_t C = param.numel();
+
+    if (x.dim() == 0) {
+        // Scalar input; nothing sensible to broadcast.
+        return param;
+    }
+
+    if (x.dim() == 1) {
+        int64_t flat = x.numel();
+        if (flat == C) return param;
+        if (C > 0 && flat % C == 0) {
+            int64_t spatial = flat / C;
+            return param.repeat_interleave(spatial);
+        }
+        // Unknown layout: for correctness, fail fast rather than silently producing wrong bounds.
+        std::ostringstream oss;
+        oss << "BoundedBatchNormNode: cannot broadcast channel param: flat=" << flat
+            << " is not divisible by C=" << C
+            << " (nodeIndex=" << _nodeIndex << ", name=" << _nodeName.ascii() << ")";
+        throw std::runtime_error(oss.str());
+    }
+
+    if (x.dim() == 2) {
+        // Treat x as [N, flat]
+        int64_t flat = x.size(1);
+        if (flat == C) return param.view({1, C});
+        if (C > 0 && flat % C == 0) {
+            int64_t spatial = flat / C;
+            return param.repeat_interleave(spatial).view({1, flat});
+        }
+        std::ostringstream oss;
+        oss << "BoundedBatchNormNode: cannot broadcast channel param for 2D input: flat=" << flat
+            << " is not divisible by C=" << C
+            << " (nodeIndex=" << _nodeIndex << ", name=" << _nodeName.ascii() << ")";
+        throw std::runtime_error(oss.str());
+    }
+
+    // Standard N-D conv-style layout: [N, C, ...]
+    std::vector<int64_t> view_shape(x.dim(), 1);
+    view_shape[1] = C;
+    return param.view(view_shape);
+}
+
+torch::Tensor BoundedBatchNormNode::forward(const torch::Tensor& input) {
+    torch::Tensor x = input.to(torch::kFloat32).contiguous();
+    _last_input_shape.clear();
+    for (int i = 0; i < x.dim(); ++i) _last_input_shape.push_back(x.size(i));
+
+    _input_size = x.numel() / (x.size(0) > 0 ? x.size(0) : 1);
+    _output_size = _input_size;
+
+    auto w = broadcast_channel_param(tmp_weight(x), x);
+    auto b = broadcast_channel_param(tmp_bias(x), x);
+    return w * x + b;
+}
+
+BoundedTensor<torch::Tensor> BoundedBatchNormNode::computeIntervalBoundPropagation(
+    const Vector<BoundedTensor<torch::Tensor>>& inputBounds) {
+
+    if (inputBounds.size() < 1) {
+        throw std::runtime_error("BoundedBatchNormNode: expects one input bound");
+    }
+    torch::Tensor l = inputBounds[0].lower().to(torch::kFloat32);
+    torch::Tensor u = inputBounds[0].upper().to(torch::kFloat32);
+
+    // Cache shape for backward reshape if needed.
+    _last_input_shape.clear();
+    for (int i = 0; i < l.dim(); ++i) _last_input_shape.push_back(l.size(i));
+
+    if (_input_size == 0 && l.defined()) {
+        _input_size = l.numel() / (l.size(0) > 0 ? l.size(0) : 1);
+    }
+    if (_output_size == 0) _output_size = _input_size;
+
+    auto w = broadcast_channel_param(tmp_weight(l), l);
+    auto b = broadcast_channel_param(tmp_bias(l), l);
+
+    // Sign-aware affine IBP
+    auto w_pos = torch::clamp_min(w, 0);
+    auto w_neg = torch::clamp_max(w, 0);
+
+    torch::Tensor out_l = w_pos * l + w_neg * u + b;
+    torch::Tensor out_u = w_pos * u + w_neg * l + b;
+
+    return BoundedTensor<torch::Tensor>(out_l, out_u);
+}
+
+BoundA BoundedBatchNormNode::boundOneSideTensor(
+    const BoundA& last_A,
+    const Vector<BoundedTensor<torch::Tensor>>& inputBounds,
+    torch::Tensor& sum_bias) {
+
+    if (!last_A.defined()) {
+        auto options = torch::TensorOptions().dtype(torch::kFloat32).device(_device);
+        sum_bias = torch::zeros({1}, options);
+        return BoundA();
+    }
+    if (!last_A.isTensor()) {
+        throw std::runtime_error("BoundedBatchNormNode::boundOneSideTensor called with non-tensor last_A");
+    }
+    if (inputBounds.size() < 1) {
+        throw std::runtime_error("BoundedBatchNormNode::boundOneSideTensor expects input bounds");
+    }
+
+    auto A = last_A.asTensor().to(torch::kFloat32);
+    auto w_ch = tmp_weight(A); // [C]
+    auto b_ch = tmp_bias(A);   // [C]
+
+    // Most common tensor-mode shapes:
+    // - [S,B,C,H,W] (conv-style)
+    // - [B,C,H,W]
+    // - [B,S,flat] (flattened)
+    // - [S,B,flat] (flattened)
+    // We use input bound shape to infer (N,C,H,W...) for reshape when needed.
+    auto in_l = inputBounds[0].lower();
+    std::vector<int64_t> xshape = in_l.defined() ? in_l.sizes().vec() : _last_input_shape;
+
+    auto apply_affine = [&](torch::Tensor A_reshaped, bool has_spec_dim, bool spec_first) {
+        // A_reshaped is either [B,S,C,H,W] or [S,B,C,H,W] or [B,C,H,W] etc.
+        torch::Tensor w_view;
+        torch::Tensor b_view;
+        if (A_reshaped.dim() == 5) {
+            // [*,*,C,H,W] with C at dim=2
+            w_view = w_ch.view({1, 1, -1, 1, 1});
+            b_view = b_ch.view({1, 1, -1, 1, 1});
+            torch::Tensor next_A = A_reshaped * w_view;
+            torch::Tensor sum_spatial = A_reshaped.sum({3, 4}); // [*,*,C]
+            torch::Tensor sb = (sum_spatial * b_ch.view({1, 1, -1})).sum(2); // [*,*]
+            return std::make_pair(next_A, sb);
+        } else if (A_reshaped.dim() == 4) {
+            // [B,C,H,W]
+            w_view = w_ch.view({1, -1, 1, 1});
+            b_view = b_ch.view({1, -1, 1, 1});
+            torch::Tensor next_A = A_reshaped * w_view;
+            torch::Tensor sum_spatial = A_reshaped.sum({2, 3}); // [B,C]
+            torch::Tensor sb = (sum_spatial * b_ch.view({1, -1})).sum(1); // [B]
+            return std::make_pair(next_A, sb);
+        } else if (A_reshaped.dim() == 3) {
+            // [B,S,C] (no spatial dims)
+            w_view = w_ch.view({1, 1, -1});
+            torch::Tensor next_A = A_reshaped * w_view;
+            torch::Tensor sb = (A_reshaped * b_ch.view({1, 1, -1})).sum(2); // [B,S]
+            return std::make_pair(next_A, sb);
+        } else if (A_reshaped.dim() == 2) {
+            // [S,C]
+            w_view = w_ch.view({1, -1});
+            torch::Tensor next_A = A_reshaped * w_view;
+            torch::Tensor sb = (A_reshaped * b_ch.view({1, -1})).sum(1); // [S]
+            return std::make_pair(next_A, sb);
+        } else {
+            throw std::runtime_error("BoundedBatchNormNode: unsupported tensor last_A dims");
+        }
+        (void)has_spec_dim;
+        (void)spec_first;
+    };
+
+    // If A is already spatial with channels, apply directly.
+    if (A.dim() == 5 || A.dim() == 4) {
+        auto [next_A, sb] = apply_affine(A, /*has_spec_dim=*/(A.dim() == 5), /*spec_first=*/true);
+        sum_bias = sb;
+        return BoundA(next_A);
+    }
+
+    // Flattened case: [B,S,flat] or [S,B,flat] or [B,flat]
+    if (A.dim() == 3) {
+        int64_t d0 = A.size(0), d1 = A.size(1), flat = A.size(2);
+
+        // Determine channel size from parameters
+        int64_t C = w_ch.numel();
+
+        // If input is 2D (N,C), then flat should equal C.
+        // If input is 4D (N,C,H,W), flat should equal C*H*W.
+        if (xshape.size() >= 2) {
+            int64_t H = 1, W = 1;
+            if (xshape.size() >= 4) {
+                H = xshape[2];
+                W = xshape[3];
+            }
+            if (C * H * W != flat && xshape.size() >= 4) {
+                // Fallback: attempt to infer H*W
+                int64_t spatial = flat / C;
+                H = spatial;
+                W = 1;
+            }
+
+            // Heuristic: treat as [B,S,flat] if d0 equals batch size of input bounds (or 1).
+            int64_t batch_from_bounds = (xshape.size() > 0) ? xshape[0] : 1;
+            bool is_BS = (d0 == batch_from_bounds);
+
+            torch::Tensor A5;
+            if (is_BS && xshape.size() >= 4) {
+                A5 = A.reshape({d0, d1, C, H, W});
+                auto [next_A5, sb] = apply_affine(A5, true, false);
+                sum_bias = sb;
+                return BoundA(next_A5.reshape({d0, d1, flat}));
+            } else if (!is_BS && xshape.size() >= 4) {
+                // [S,B,flat]
+                A5 = A.reshape({d0, d1, C, H, W});
+                auto [next_A5, sb] = apply_affine(A5, true, true);
+                sum_bias = sb;
+                return BoundA(next_A5.reshape({d0, d1, flat}));
+            } else if (xshape.size() == 2) {
+                // [B,S,C]
+                torch::Tensor A3 = A.reshape({d0, d1, C});
+                auto [next_A3, sb] = apply_affine(A3, true, false);
+                sum_bias = sb;
+                return BoundA(next_A3.reshape({d0, d1, flat}));
+            }
+        } else {
+            // No reliable shape info; try to infer spatial from flat.
+            if (C > 0 && flat % C == 0) {
+                int64_t spatial = flat / C;
+                // Treat as [d0,d1,C,spatial,1]
+                torch::Tensor A5 = A.reshape({d0, d1, C, spatial, 1});
+                auto [next_A5, sb] = apply_affine(A5, true, false);
+                sum_bias = sb;
+                return BoundA(next_A5.reshape({d0, d1, flat}));
+            }
+        }
+    }
+
+    // Special handling for 3D A with shape [d0, d1, small] when input is much larger and flattened
+    // This happens when backward pass starts from a small output and reaches a layer with larger input
+    if (A.dim() == 3 && xshape.size() == 1) {
+        int64_t d0 = A.size(0);
+        int64_t d1 = A.size(1);
+        int64_t A_flat = A.size(2);
+        int64_t C = w_ch.numel();
+        int64_t input_flat = xshape[0];
+        
+        // If A_flat doesn't match input_flat, we need to expand/broadcast A
+        // This typically happens when tracking a small number of output specifications
+        // through a layer with many more inputs
+        if (A_flat != input_flat && C > 0 && input_flat % C == 0) {
+            int64_t spatial = input_flat / C;
+            int64_t H = static_cast<int64_t>(std::sqrt(spatial));
+            int64_t W = spatial / H;
+            
+            if (H * W == spatial) {
+                // Expand A to match the input size
+                // A is [d0, d1, A_flat], need to make it [d0, d1, C, H, W]
+                torch::Tensor A_expanded;
+                if (A_flat == 1) {
+                    // Broadcast single value to all input positions
+                    A_expanded = A.expand({d0, d1, input_flat});  // [d0, d1, input_flat]
+                } else if (A_flat == C) {
+                    // A has one value per channel, broadcast spatially
+                    A_expanded = A.view({d0, d1, C, 1, 1}).expand({d0, d1, C, H, W});  // [d0, d1, C, H, W]
+                    A_expanded = A_expanded.reshape({d0, d1, input_flat});  // [d0, d1, input_flat]
+                } else {
+                    // General case: just expand to match input size
+                    A_expanded = A.expand({d0, d1, input_flat});
+                }
+                
+                // Reshape to spatial format
+                A_expanded = A_expanded.reshape({d0, d1, C, H, W});  // [d0, d1, C, H, W]
+                
+                auto [next_A5, sb] = apply_affine(A_expanded, true, true);
+                sum_bias = sb;
+                return BoundA(next_A5.reshape({d0, d1, input_flat}));
+            }
+        }
+    }
+    
+    if (A.dim() == 2) {
+        // Treat as [S,flat] (e.g. preprocessC output)
+        int64_t S = A.size(0);
+        int64_t flat = A.size(1);
+        int64_t C = w_ch.numel();
+        if (_last_input_shape.size() >= 4) {
+            int64_t H = _last_input_shape[2];
+            int64_t W = _last_input_shape[3];
+            if (C * H * W == flat) {
+                auto A5 = A.reshape({S, 1, C, H, W});
+                auto [next_A5, sb] = apply_affine(A5, true, true);
+                sum_bias = sb.squeeze(1);
+                return BoundA(next_A5.reshape({S, flat}));
+            }
+        }
+        // No cached spatial shape; infer from flat if possible.
+        if (C > 0 && flat % C == 0) {
+            int64_t spatial = flat / C;
+            auto A5 = A.reshape({S, 1, C, spatial, 1});
+            auto [next_A5, sb] = apply_affine(A5, true, true);
+            sum_bias = sb.squeeze(1);
+            return BoundA(next_A5.reshape({S, flat}));
+        }
+        // 2D case: [S,C]
+        if (flat == C) {
+            auto [next_A2, sb] = apply_affine(A, false, true);
+            sum_bias = sb;
+            return BoundA(next_A2);
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "BoundedBatchNormNode: unsupported tensor last_A shape for BN backward"
+        << " (nodeIndex=" << _nodeIndex << ", name=" << _nodeName.ascii() << ")"
+        << " A.dim=" << A.dim() << " A.sizes=" << A.sizes()
+        << " C=" << w_ch.numel();
+    if (inputBounds.size() >= 1 && inputBounds[0].lower().defined()) {
+        oss << " input.lower.sizes=" << inputBounds[0].lower().sizes();
+    }
+    throw std::runtime_error(oss.str());
+}
+
+BoundA BoundedBatchNormNode::boundOneSidePatches(
+    const BoundA& last_A,
+    const Vector<BoundedTensor<torch::Tensor>>& inputBounds,
+    torch::Tensor& sum_bias) {
+
+    if (!last_A.defined()) {
+        auto options = torch::TensorOptions().dtype(torch::kFloat32).device(_device);
+        sum_bias = torch::zeros({1}, options);
+        return BoundA();
+    }
+    if (!last_A.isPatches()) {
+        throw std::runtime_error("BoundedBatchNormNode::boundOneSidePatches called with non-patches last_A");
+    }
+    if (inputBounds.size() < 1) {
+        throw std::runtime_error("BoundedBatchNormNode::boundOneSidePatches expects input bounds");
+    }
+
+    auto patches = last_A.asPatches();
+    torch::Tensor P = patches->patches.to(torch::kFloat32);
+
+    auto w = tmp_weight(P); // [C]
+    auto b = tmp_bias(P);   // [C]
+
+    // Scale patches along channel dimension (dim = -3)
+    std::vector<int64_t> view(P.dim(), 1);
+    view[P.dim() - 3] = w.numel();
+    torch::Tensor P_scaled = P * w.view(view);
+
+    // Bias contribution: compute A * bias_map, matching auto_LiRPA's unfold+einsum logic
+    // Only 4D BN patches expected (conv-style): input shape [N,C,H,W]
+    torch::Tensor in_l = inputBounds[0].lower();
+    std::vector<int64_t> xshape = in_l.defined() ? in_l.sizes().vec() : _last_input_shape;
+    if (xshape.size() < 4) {
+        // Patches mode is only meaningful for conv-style tensors.
+        sum_bias = torch::zeros({1}, P.options());
+        return BoundA(patches->create_similar(P_scaled));
+    }
+
+    int64_t C = w.numel();
+    int64_t H = xshape[2];
+    int64_t W = xshape[3];
+
+    // bias map: [1, C, H, W]
+    torch::Tensor bias_map = b.view({-1, 1, 1}).expand({C, H, W}).unsqueeze(0);
+
+    // Unfold bias_map to [1, out_h, out_w, C, kh, kw]
+    std::vector<int64_t> ksize = {P.size(-2), P.size(-1)};
+    torch::Tensor bias_unfolded = inplace_unfold(
+        bias_map, ksize, patches->stride, patches->padding, patches->inserted_zeros, patches->output_padding);
+
+    if (patches->unstable_idx.has_value()) {
+        // Sparse patches: expected P shape [unstable_size, batch, C, kh, kw]
+        auto idx = patches->unstable_idx.value();
+        if (idx.size() < 3) {
+            sum_bias = torch::zeros({1}, P.options());
+            return BoundA(patches->create_similar(P_scaled));
+        }
+        // Select [out_h, out_w] using idx[1], idx[2]
+        // bias_unfolded: [1, out_h, out_w, C, kh, kw] -> [1, unstable, C, kh, kw]
+        torch::Tensor bias_sel = bias_unfolded.index({0, idx[1], idx[2]}); // [unstable, C, kh, kw] or [1, unstable, ...] depending on indexing
+        if (bias_sel.dim() == 4) {
+            bias_sel = bias_sel.unsqueeze(0); // [1, unstable, C, kh, kw]
+        }
+        // Rearrange to [unstable, 1, C, kh, kw] then expand batch
+        bias_sel = bias_sel.permute({1, 0, 2, 3, 4}); // [unstable, 1, C, kh, kw]
+        bias_sel = bias_sel.expand({P_scaled.size(0), P_scaled.size(1), P_scaled.size(2), P_scaled.size(3), P_scaled.size(4)});
+
+        // Multiply and sum over (C, kh, kw) -> [unstable, batch]
+        torch::Tensor sb = (P_scaled * bias_sel).sum({2, 3, 4});
+        sum_bias = sb;
+    } else {
+        // Dense patches: expected P shape [out_c, batch, out_h, out_w, C, kh, kw]
+        torch::Tensor bias_ready = bias_unfolded.unsqueeze(0); // [1, out_h, out_w, C, kh, kw] -> [1,1,out_h,out_w,C,kh,kw]?
+        if (bias_ready.dim() == 7) {
+            // bias_unfolded already [1,out_h,out_w,C,kh,kw], unsqueeze gives [1,1,out_h,out_w,C,kh,kw]
+            // Broadcast on out_c dimension.
+        } else if (bias_ready.dim() == 6) {
+            // If unfold returns [out_h,out_w,C,kh,kw] (shouldn't), fix it.
+            bias_ready = bias_unfolded.unsqueeze(0).unsqueeze(0);
+        }
+        // P_scaled: [out_c, batch, out_h, out_w, C, kh, kw]
+        // bias_ready: [1, 1, out_h, out_w, C, kh, kw]
+        torch::Tensor sb = (P_scaled * bias_ready).sum({-3, -2, -1}); // [out_c, batch, out_h, out_w]
+        sum_bias = sb;
+    }
+
+    return BoundA(patches->create_similar(P_scaled));
+}
+
+void BoundedBatchNormNode::boundBackward(
+    const BoundA& last_lA,
+    const BoundA& last_uA,
+    const Vector<BoundedTensor<torch::Tensor>>& inputBounds,
+    Vector<Pair<BoundA, BoundA>>& outputA_matrices,
+    torch::Tensor& lbias,
+    torch::Tensor& ubias) {
+
+    outputA_matrices.clear();
+
+    BoundA lA_x, uA_x;
+    torch::Tensor lbias_add, ubias_add;
+
+    if (last_lA.defined()) {
+        if (last_lA.isTensor()) lA_x = boundOneSideTensor(last_lA, inputBounds, lbias_add);
+        else lA_x = boundOneSidePatches(last_lA, inputBounds, lbias_add);
+    }
+    if (last_uA.defined()) {
+        if (last_uA.isTensor()) uA_x = boundOneSideTensor(last_uA, inputBounds, ubias_add);
+        else uA_x = boundOneSidePatches(last_uA, inputBounds, ubias_add);
+    }
+
+    outputA_matrices.append(Pair<BoundA, BoundA>(lA_x, uA_x));
+
+    if (lbias_add.defined() && lbias_add.numel() > 0) {
+        lbias = lbias.defined() ? (lbias + lbias_add) : lbias_add;
+    }
+    if (ubias_add.defined() && ubias_add.numel() > 0) {
+        ubias = ubias.defined() ? (ubias + ubias_add) : ubias_add;
+    }
+}
+
+void BoundedBatchNormNode::moveToDevice(const torch::Device& device)
+{
+    BoundedTorchNode::moveToDevice(device);
+    _scale = _scale.to(device);
+    _bias = _bias.to(device);
+    _mean = _mean.to(device);
+    _var = _var.to(device);
+}
+
+} // namespace NLR

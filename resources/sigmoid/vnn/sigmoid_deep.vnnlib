@@ -1,0 +1,26 @@
+; VNNLIB property for SigmoidDeep
+; Input dimension: 3
+; Output dimension: 3
+; Input bounds: [0.0, 1.0]
+
+; Input variables
+(declare-const X_0 Real)
+(declare-const X_1 Real)
+(declare-const X_2 Real)
+
+; Output variables
+(declare-const Y_0 Real)
+(declare-const Y_1 Real)
+(declare-const Y_2 Real)
+
+; Input constraints
+(assert (>= X_0 0.0))
+(assert (<= X_0 1.0))
+(assert (>= X_1 0.0))
+(assert (<= X_1 1.0))
+(assert (>= X_2 0.0))
+(assert (<= X_2 1.0))
+
+; Output property: check if output 0 can be <= 0
+; (This is a simple reachability property)
+(assert (<= Y_0 0.0))

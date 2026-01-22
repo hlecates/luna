@@ -1,0 +1,5 @@
+auto_LiRPA>=1.0.0
+torch>=2.0.0
+numpy>=1.22.0
+onnx>=1.15.0
+onnx2pytorch

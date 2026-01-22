@@ -13,6 +13,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(BUILD_STATIC_LIRPA "Build static LIRPA binary" OFF)
 option(ENABLE_OPENBLAS "Do symbolic bound tightening using blas" ON)
+option(RUN_UNIT_TEST "Build and register unit tests" ON)
+option(RUN_REGRESS_TEST "Build and register regression tests" OFF)
+option(RUN_SYSTEM_TEST "Build and register system tests" OFF)
+option(RUN_PYTHON_TEST "Enable Python-based regression tests" OFF)
 
 ###################
 ## Git variables ##
@@ -44,7 +48,7 @@ set(TOOLS_DIR "${PROJECT_SOURCE_DIR}/tools")
 set(SRC_DIR "${PROJECT_SOURCE_DIR}/src")
 set(RESOURCES_DIR "${PROJECT_SOURCE_DIR}/resources")
 set(COMMON_DIR "${SRC_DIR}/common")
-set(NLR_DIR "${SRC_DIR}/nlr")
+set(ENGINE_DIR "${SRC_DIR}/engine")
 set(INPUT_PARSERS_DIR "${SRC_DIR}/input_parsers")
 
 if (MSVC)
@@ -140,6 +144,26 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 list(APPEND LIBS ${TORCH_LIBRARIES})
 
 ##############
+## pybind11 ##
+##############
+
+option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" ON)
+
+if(BUILD_PYTHON_BINDINGS)
+  set(PYBIND11_VERSION 2.11.1)
+  set(PYBIND11_DIR "${TOOLS_DIR}/pybind11-${PYBIND11_VERSION}")
+  
+  if(NOT EXISTS "${PYBIND11_DIR}/include/pybind11/pybind11.h")
+    message("Can't find pybind11, downloading...")
+    execute_process(COMMAND ${TOOLS_DIR}/download_pybind11.sh ${PYBIND11_VERSION})
+  endif()
+  
+  # Add pybind11 subdirectory
+  add_subdirectory(${PYBIND11_DIR} ${CMAKE_BINARY_DIR}/pybind11)
+  message(STATUS "Building Python bindings with pybind11")
+endif()
+
+##############
 ## OpenBLAS ##
 ##############
 
@@ -177,36 +201,6 @@ endif()
 set(LIRPA_LIB LIRPACore)
 set(BIN_DIR "${CMAKE_BINARY_DIR}/bin")
 
-# Collect source files
-file(GLOB SRCS_NLR "${NLR_DIR}/*.cpp")
-file(GLOB SRCS_NLR_CONV "${NLR_DIR}/conv/*.cpp")
-file(GLOB SRCS_INPUT_PARSERS "${INPUT_PARSERS_DIR}/*.cpp")
-file(GLOB SRCS_COMMON "${COMMON_DIR}/*.cpp")
-file(GLOB SRCS_COMMON_REAL "${COMMON_DIR}/real/*.cpp")
-# LIRPA: Options.cpp not needed - exclude configuration directory from build
-# file(GLOB SRCS_CONFIG "${SRC_DIR}/configuration/*.cpp")
-set(SRCS_CONFIG "${SRC_DIR}/configuration/GlobalConfiguration.cpp")
-
-# Build core library
-add_library(${LIRPA_LIB}
-    ${DEPS_ONNX}
-    ${SRCS_NLR}
-    ${SRCS_NLR_CONV}
-    ${SRCS_INPUT_PARSERS}
-    ${SRCS_COMMON}
-    ${SRCS_COMMON_REAL}
-    ${SRCS_CONFIG}
-)
-target_include_directories(${LIRPA_LIB} PUBLIC
-    ${SRC_DIR}
-    ${COMMON_DIR}
-    ${NLR_DIR}
-    ${INPUT_PARSERS_DIR}
-    ${SRC_DIR}/engine
-    ${SRC_DIR}/configuration
-    ${LIBS_INCLUDES}
-)
-
 # Compiler flags
 if (NOT MSVC)
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -226,6 +220,16 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 list(APPEND LIBS Threads::Threads)
 
+# Create core library with ONNX dependencies
+# Subdirectories will add their sources via target_sources()
+add_library(${LIRPA_LIB} ${DEPS_ONNX})
+
+# Set base include directories
+target_include_directories(${LIRPA_LIB} PUBLIC
+    ${SRC_DIR}
+    ${LIBS_INCLUDES}
+)
+
 # Link libraries
 if (BUILD_STATIC_LIRPA)
   target_link_libraries(${LIRPA_LIB} ${LIBS} -static)
@@ -235,42 +239,93 @@ endif()
 
 target_compile_options(${LIRPA_LIB} PRIVATE ${RELEASE_FLAGS})
 
-# Build executables
-add_executable(RunCROWN RunCROWN.cpp)
-target_link_libraries(RunCROWN ${LIRPA_LIB})
-target_include_directories(RunCROWN PRIVATE ${LIBS_INCLUDES})
-target_compile_options(RunCROWN PRIVATE ${RELEASE_FLAGS})
+# Add subdirectories - each will populate LIRPACore using target_sources()
+add_subdirectory(src/common)
+add_subdirectory(src/engine)
+add_subdirectory(src/input_parsers)
+add_subdirectory(src/configuration)
 
-add_executable(RunAlphaCROWN RunAlphaCROWN.cpp)
-target_link_libraries(RunAlphaCROWN ${LIRPA_LIB})
-target_include_directories(RunAlphaCROWN PRIVATE ${LIBS_INCLUDES})
-target_compile_options(RunAlphaCROWN PRIVATE ${RELEASE_FLAGS})
+# Build main lirpa executable
+add_executable(lirpa src/main.cpp src/engine/LirpaMain.cpp)
+target_link_libraries(lirpa ${LIRPA_LIB})
+target_include_directories(lirpa PRIVATE
+    ${SRC_DIR}
+    ${LIBS_INCLUDES}
+)
+target_compile_options(lirpa PRIVATE ${RELEASE_FLAGS})
 
-add_executable(RunFull RunFull.cpp)
-target_link_libraries(RunFull ${LIRPA_LIB})
-target_include_directories(RunFull PRIVATE ${LIBS_INCLUDES})
-target_compile_options(RunFull PRIVATE ${RELEASE_FLAGS})
-
-add_executable(TestFlatten TestFlatten.cpp)
-target_link_libraries(TestFlatten ${LIRPA_LIB})
-target_include_directories(TestFlatten PRIVATE ${LIBS_INCLUDES})
-target_compile_options(TestFlatten PRIVATE ${RELEASE_FLAGS})
-
-# Copy executables to bin directory
-add_custom_command(TARGET RunCROWN POST_BUILD
+# Copy lirpa executable to bin directory
+add_custom_command(TARGET lirpa POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BIN_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:RunCROWN> ${BIN_DIR}/)
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lirpa> ${BIN_DIR}/
+)
 
-add_custom_command(TARGET RunAlphaCROWN POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${BIN_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:RunAlphaCROWN> ${BIN_DIR}/)
+# Install lirpa executable to user-local bin directory (~/.local/bin)
+# This directory is typically already in PATH on macOS/Linux
+set(USER_LOCAL_BIN "$ENV{HOME}/.local/bin")
+install(TARGETS lirpa
+    RUNTIME DESTINATION ${USER_LOCAL_BIN}
+    COMPONENT Runtime
+)
 
-add_custom_command(TARGET RunFull POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${BIN_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:RunFull> ${BIN_DIR}/)
+# Automatically install to ~/.local/bin after build (so user can run 'lirpa' from anywhere)
+add_custom_command(TARGET lirpa POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${USER_LOCAL_BIN}
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lirpa> ${USER_LOCAL_BIN}/
+    COMMENT "Installing lirpa to ${USER_LOCAL_BIN} (add to PATH if needed)"
+)
+
+###################
+## Testing Setup ##
+###################
+
+option(BUILD_TESTS "Build the test suite" ON)
+option(BUILD_BENCHMARKS "Build performance benchmarks" ON)
+
+if(BUILD_TESTS)
+    if(NOT RUN_UNIT_TEST AND NOT RUN_REGRESS_TEST AND NOT RUN_SYSTEM_TEST AND NOT RUN_PYTHON_TEST)
+        set(RUN_UNIT_TEST ON)
+    endif()
+else()
+    set(RUN_UNIT_TEST OFF CACHE BOOL "" FORCE)
+    set(RUN_REGRESS_TEST OFF CACHE BOOL "" FORCE)
+    set(RUN_SYSTEM_TEST OFF CACHE BOOL "" FORCE)
+    set(RUN_PYTHON_TEST OFF CACHE BOOL "" FORCE)
+endif()
+
+if(BUILD_BENCHMARKS)
+    include(FetchContent)
+    FetchContent_Declare(googlebenchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.8.3)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googlebenchmark)
+endif()
+
+if(BUILD_TESTS)
+    list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+    list(APPEND CMAKE_PREFIX_PATH "${TOOLS_DIR}/cxxtest")
+    find_package(CxxTest)
+    if(NOT CXXTEST_FOUND)
+        message(FATAL_ERROR "CxxTest not found. Expected at ${TOOLS_DIR}/cxxtest")
+    endif()
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+#######################
+## Python Bindings   ##
+#######################
+
+if(BUILD_PYTHON_BINDINGS)
+    add_subdirectory(lirpapy)
+endif()
 
 message(STATUS "LIRPA configured successfully")
 message(STATUS "  - LIRPA Version: ${LIRPA_VERSION}")
 message(STATUS "  - Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  - PyTorch version: ${PYTORCH_VERSION}")
 message(STATUS "  - Boost version: ${BOOST_VERSION}")
+message(STATUS "  - Build tests: ${BUILD_TESTS}")
+message(STATUS "  - Build benchmarks: ${BUILD_BENCHMARKS}")
+message(STATUS "  - Build Python bindings: ${BUILD_PYTHON_BINDINGS}")

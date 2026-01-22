@@ -1,16 +1,3 @@
-// This is rough template, instead of using marabou's Pair wrapper this would be a more directed wrapper
-// Would follow auto lirpa's approach nearly directly
-//  Allow for easier porting, and also readbility of code
-
-// This Vector<std::pair<torch::Tensor, torch::Tensor>> inputBounds;
-// Becomes vector<BoundedTenrsor> inputBounds;
-
-
-// Do not want to change all the std::pair to either Marabou' Pair or this since I dont want to do the switch multiple times
-
-// not sure if making these template/wrappers is encouraged if will only be used in the torch CROWN
-
-
 #ifndef __BoundedTensor_h__
 #define __BoundedTensor_h__
 
