@@ -195,8 +195,11 @@ void BoundedConvNode::initializeFromConv2d(const torch::nn::Conv2d& convModule) 
 
 // Forward pass
 torch::Tensor BoundedConvNode::forward(const torch::Tensor& input) {
-    // Convert input to float32 and ensure contiguous
-    torch::Tensor inputFloat = input.to(torch::kFloat32).contiguous();
+    // Convert input to float32 on the input device and ensure contiguous
+    const auto device = input.device();
+    torch::Tensor inputFloat = input
+        .to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+        .contiguous();
 
     // Update input/output shapes only if not already set from ONNX metadata
     // (ONNX parsing sets the proper 4D shape, forward() might receive flattened input)
@@ -214,9 +217,13 @@ torch::Tensor BoundedConvNode::forward(const torch::Tensor& input) {
             throw std::runtime_error("Conv1d module not initialized");
         }
 
-        // Get weight and bias
-        torch::Tensor weight = conv1d->weight.to(torch::kFloat32).contiguous();
-        torch::Tensor bias = has_bias ? conv1d->bias.to(torch::kFloat32) : torch::Tensor();
+        // Get weight and bias on the input device
+        torch::Tensor weight = conv1d->weight
+            .to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            .contiguous();
+        torch::Tensor bias = has_bias
+            ? conv1d->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            : torch::Tensor();
 
         // Direct convolution for 1D (matrix mode not implemented for 1D)
         std::vector<int64_t> stride_64(stride.begin(), stride.end());
@@ -238,9 +245,13 @@ torch::Tensor BoundedConvNode::forward(const torch::Tensor& input) {
             throw std::runtime_error("Conv2d module not initialized");
         }
 
-        // Get weight and bias
-        torch::Tensor weight = conv2d->weight.to(torch::kFloat32).contiguous();
-        torch::Tensor bias = has_bias ? conv2d->bias.to(torch::kFloat32) : torch::Tensor();
+        // Get weight and bias on the input device
+        torch::Tensor weight = conv2d->weight
+            .to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            .contiguous();
+        torch::Tensor bias = has_bias
+            ? conv2d->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            : torch::Tensor();
 
         if (mode == ConvMode::MATRIX) {
             // Matrix mode using im2col
@@ -429,20 +440,32 @@ void BoundedConvNode::boundBackward(
         throw std::runtime_error("BoundedConvNode expects at least one input");
     }
 
-    // Get weight and bias
+    // Get weight and bias on the same device as A/input bounds
     torch::Tensor weight, bias;
+    torch::Device device = _device;
+    if (last_lA.defined() && last_lA.isTensor()) {
+        device = last_lA.asTensor().device();
+    } else if (last_uA.defined() && last_uA.isTensor()) {
+        device = last_uA.asTensor().device();
+    } else if (!inputBounds.empty() && inputBounds[0].lower().defined()) {
+        device = inputBounds[0].lower().device();
+    }
     if (conv_dim == 1) {
         if (!conv1d) {
             throw std::runtime_error("Conv1d module not initialized");
         }
-        weight = conv1d->weight.to(torch::kFloat32);
-        bias = has_bias ? conv1d->bias.to(torch::kFloat32) : torch::Tensor();
+        weight = conv1d->weight.to(torch::TensorOptions().dtype(torch::kFloat32).device(device));
+        bias = has_bias
+            ? conv1d->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            : torch::Tensor();
     } else {
         if (!conv2d) {
             throw std::runtime_error("Conv2d module not initialized");
         }
-        weight = conv2d->weight.to(torch::kFloat32);
-        bias = has_bias ? conv2d->bias.to(torch::kFloat32) : torch::Tensor();
+        weight = conv2d->weight.to(torch::TensorOptions().dtype(torch::kFloat32).device(device));
+        bias = has_bias
+            ? conv2d->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            : torch::Tensor();
     }
 
     // Compute bounds for lower and upper
@@ -891,14 +914,19 @@ BoundedTensor<torch::Tensor> BoundedConvNode::computeIntervalBoundPropagation(
 
     const BoundedTensor<torch::Tensor>& input = inputBounds[0];
 
-    // Get weight and bias
+    // Get weight and bias on the input device
     torch::Tensor weight, bias;
+    const auto device = input.lower().defined() ? input.lower().device() : _device;
     if (conv_dim == 1) {
-        weight = conv1d->weight.to(torch::kFloat32);
-        bias = has_bias ? conv1d->bias.to(torch::kFloat32) : torch::Tensor();
+        weight = conv1d->weight.to(torch::TensorOptions().dtype(torch::kFloat32).device(device));
+        bias = has_bias
+            ? conv1d->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            : torch::Tensor();
     } else {
-        weight = conv2d->weight.to(torch::kFloat32);
-        bias = has_bias ? conv2d->bias.to(torch::kFloat32) : torch::Tensor();
+        weight = conv2d->weight.to(torch::TensorOptions().dtype(torch::kFloat32).device(device));
+        bias = has_bias
+            ? conv2d->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+            : torch::Tensor();
     }
 
     // Reshape input bounds if needed for convolution

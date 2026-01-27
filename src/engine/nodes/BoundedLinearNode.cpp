@@ -118,9 +118,13 @@ void BoundedLinearNode::boundBackward(
     torch::Tensor last_uA_tensor = last_uA.asTensor();
 
 
-    // Extract weight and bias from the linear module
-    auto weight = _linearModule->weight.to(torch::kFloat32);
-    auto bias = _linearModule->bias.defined() ? _linearModule->bias.to(torch::kFloat32) : torch::Tensor();
+    // Extract weight and bias from the linear module on the same device as A
+    const auto device = last_lA_tensor.defined() ? last_lA_tensor.device() : last_uA_tensor.device();
+    auto weight = _linearModule->weight
+        .to(torch::TensorOptions().dtype(torch::kFloat32).device(device));
+    auto bias = _linearModule->bias.defined()
+        ? _linearModule->bias.to(torch::TensorOptions().dtype(torch::kFloat32).device(device))
+        : torch::Tensor();
 
     // Scale weight by alpha
     weight = _alpha * weight;

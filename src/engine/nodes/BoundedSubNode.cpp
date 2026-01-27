@@ -84,7 +84,7 @@ void BoundedSubNode::boundBackward(
                 torch::Tensor last_uA_tensor = last_uA.asTensor();
 
                 if (last_lA_tensor.defined()) {
-                    torch::Tensor constant = _constantValue.flatten();
+                    torch::Tensor constant = _constantValue.to(last_lA_tensor.device()).flatten();
 
                     // Compute -A @ constant to get the bias contribution
                     torch::Tensor constant_contrib;
@@ -106,7 +106,7 @@ void BoundedSubNode::boundBackward(
                 }
 
                 if (last_uA_tensor.defined()) {
-                    torch::Tensor constant = _constantValue.flatten();
+                    torch::Tensor constant = _constantValue.to(last_uA_tensor.device()).flatten();
 
                     // Compute -A @ constant for upper bound
                     torch::Tensor constant_contrib;
@@ -155,7 +155,7 @@ void BoundedSubNode::boundBackward(
                 torch::Tensor last_uA_tensor = last_uA.asTensor();
 
                 if (last_lA_tensor.defined()) {
-                    torch::Tensor constant = _constantValue.flatten();
+                    torch::Tensor constant = _constantValue.to(last_lA_tensor.device()).flatten();
 
                     // Compute A @ constant to get the bias contribution
                     torch::Tensor constant_contrib;
@@ -173,7 +173,7 @@ void BoundedSubNode::boundBackward(
                 }
 
                 if (last_uA_tensor.defined()) {
-                    torch::Tensor constant = _constantValue.flatten();
+                    torch::Tensor constant = _constantValue.to(last_uA_tensor.device()).flatten();
 
                     // Compute A @ constant for upper bound
                     torch::Tensor constant_contrib;
