@@ -1,9 +1,9 @@
-#ifndef __LirpaError_h__
-#define __LirpaError_h__
+#ifndef __LunaError_h__
+#define __LunaError_h__
 
 #include "Error.h"
 
-class LirpaError : public Error
+class LunaError : public Error
 {
 public:
     enum Code {
@@ -32,18 +32,18 @@ public:
         INTERNAL_ERROR = 99
     };
 
-    LirpaError( LirpaError::Code code )
-        : Error( "LirpaError", (int)code )
+    LunaError( LunaError::Code code )
+        : Error( "LunaError", (int)code )
     {
     }
 
-    LirpaError( LirpaError::Code code, const char *userMessage )
-        : Error( "LirpaError", (int)code, userMessage )
+    LunaError( LunaError::Code code, const char *userMessage )
+        : Error( "LunaError", (int)code, userMessage )
     {
     }
 };
 
-#endif // __LirpaError_h__
+#endif // __LunaError_h__
 
 //
 // Local Variables:

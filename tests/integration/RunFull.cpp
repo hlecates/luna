@@ -1,7 +1,7 @@
 #include "src/input_parsers/OnnxToTorch.h"
 #include "src/engine/TorchModel.h"
 #include "src/engine/AlphaCROWNAnalysis.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include <torch/torch.h>
 #include <iostream>
 #include <iomanip>
@@ -39,7 +39,7 @@ static void printBounds(const torch::Tensor& lower, const torch::Tensor& upper, 
 
 int main(int argc, char* argv[]) {
     // Parse command line arguments for configuration
-    LirpaConfiguration::parseArgs(argc, argv);
+    LunaConfiguration::parseArgs(argc, argv);
 
     try {
         // Force single-threaded execution for numerical determinism
@@ -163,7 +163,7 @@ int main(int argc, char* argv[]) {
         BoundedTensor<torch::Tensor> crownResult = torchModel->compute_bounds(
             inputBounds,
             nullptr,  // No specification matrix
-            LirpaConfiguration::AnalysisMethod::CROWN,
+            LunaConfiguration::AnalysisMethod::CROWN,
             true,   // compute lower bounds
             true    // compute upper bounds
         );
@@ -187,12 +187,12 @@ int main(int argc, char* argv[]) {
 
         
         // Step 4: Configure analysis for Alpha-CROWN
-        LirpaConfiguration::ANALYSIS_METHOD = LirpaConfiguration::AnalysisMethod::AlphaCROWN;
-        LirpaConfiguration::ALPHA_ITERATIONS = iterations;
-        LirpaConfiguration::ALPHA_LR = 0.5f;
-        LirpaConfiguration::OPTIMIZE_LOWER = true;
-        LirpaConfiguration::OPTIMIZE_UPPER = true;
-        LirpaConfiguration::VERBOSE = true;
+        LunaConfiguration::ANALYSIS_METHOD = LunaConfiguration::AnalysisMethod::AlphaCROWN;
+        LunaConfiguration::ALPHA_ITERATIONS = iterations;
+        LunaConfiguration::ALPHA_LR = 0.5f;
+        LunaConfiguration::OPTIMIZE_LOWER = true;
+        LunaConfiguration::OPTIMIZE_UPPER = true;
+        LunaConfiguration::VERBOSE = true;
 
         std::cout << "\nRunning Alpha-CROWN analysis (via compute_bounds)..." << std::endl;
         std::cout << "Configuration:" << std::endl;
@@ -204,7 +204,7 @@ int main(int argc, char* argv[]) {
         BoundedTensor<torch::Tensor> result = torchModel->compute_bounds(
             inputBounds,
             nullptr,  // No specification matrix
-            LirpaConfiguration::AnalysisMethod::AlphaCROWN,
+            LunaConfiguration::AnalysisMethod::AlphaCROWN,
             true,   // compute lower bounds
             true    // compute upper bounds
         );

@@ -4,7 +4,7 @@
 set(PROPERTY_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 function(add_property_test TEST_NAME)
-    lirpa_add_test(${TEST_NAME} ${TEST_NAME}.cpp "property" "unit")
+    luna_add_test(${TEST_NAME} ${TEST_NAME}.cpp "property" "unit")
 endfunction()
 
 add_property_test(test_bound_monotonicity)

@@ -1,5 +1,5 @@
 """
-Pytest configuration and fixtures for lirpapy tests
+Pytest configuration and fixtures for lunapy tests
 """
 
 import pytest

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "src/engine/AlphaCROWNAnalysis.h"
 #include "src/engine/TorchModel.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "fixtures/model_builders.h"
 #include "fixtures/test_utils.h"
 #include <torch/torch.h>
@@ -21,9 +21,9 @@ protected:
         }
         
         // Configure AlphaCROWN
-        LirpaConfiguration::ALPHA_ITERATIONS = 5;
-        LirpaConfiguration::OPTIMIZE_LOWER = true;
-        LirpaConfiguration::OPTIMIZE_UPPER = false;
+        LunaConfiguration::ALPHA_ITERATIONS = 5;
+        LunaConfiguration::OPTIMIZE_LOWER = true;
+        LunaConfiguration::OPTIMIZE_UPPER = false;
     }
 };
 
@@ -39,7 +39,7 @@ TEST_F(AlphaCROWNAnalysisTest, BasicOptimization) {
     
     // Test lower bound optimization
     torch::Tensor lowerBounds = analysis.computeOptimizedBounds(
-        LirpaConfiguration::BoundSide::Lower);
+        LunaConfiguration::BoundSide::Lower);
     
     EXPECT_GT(lowerBounds.numel(), 0);
 }
@@ -60,7 +60,7 @@ TEST_F(AlphaCROWNAnalysisTest, AlphaCROWNTighterThanCROWN) {
     NLR::AlphaCROWNAnalysis alphaAnalysis(model.get());
     alphaAnalysis.getCROWNAnalysis()->setInputBounds(inputBounds);
     torch::Tensor alphaLower = alphaAnalysis.computeOptimizedBounds(
-        LirpaConfiguration::BoundSide::Lower);
+        LunaConfiguration::BoundSide::Lower);
     torch::Tensor alphaUpper = alphaAnalysis.getCROWNAnalysis()->getOutputBounds().upper();
     
     BoundedTensor<torch::Tensor> alphaBounds(alphaLower, alphaUpper);

@@ -2,7 +2,7 @@
 #include "src/engine/TorchModel.h"
 #include "src/engine/AlphaCROWNAnalysis.h"
 #include "src/input_parsers/VnnLibInputParser.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "src/input_parsers/OutputConstraint.h"
 #include <torch/torch.h>
 #include <iostream>
@@ -192,7 +192,7 @@ static void performORBranchVerification(const torch::Tensor& thresholds,
 
 int main(int argc, char* argv[]) {
     // Parse command line arguments for configuration
-    LirpaConfiguration::parseArgs(argc, argv);
+    LunaConfiguration::parseArgs(argc, argv);
     (void)argc;
     (void)argv;
 
@@ -280,7 +280,7 @@ int main(int argc, char* argv[]) {
         BoundedTensor<torch::Tensor> crownResult = torchModel->compute_bounds(
             inputBounds,
             &C,  // Specification matrix
-            LirpaConfiguration::AnalysisMethod::CROWN,
+            LunaConfiguration::AnalysisMethod::CROWN,
             true,   // compute lower bounds
             true    // compute upper bounds
         );

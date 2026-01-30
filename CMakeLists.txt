@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(LIRPA)
+project(LUNA)
 
-set(LIRPA_VERSION 1.0.0)
-add_definitions("-DLIRPA_VERSION=\"${LIRPA_VERSION}\"")
+set(LUNA_VERSION 1.0.0)
+add_definitions("-DLUNA_VERSION=\"${LUNA_VERSION}\"")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 ## User options ##
 ##################
 
-option(BUILD_STATIC_LIRPA "Build static LIRPA binary" OFF)
+option(BUILD_STATIC_LUNA "Build static LUNA binary" OFF)
 option(ENABLE_OPENBLAS "Do symbolic bound tightening using blas" ON)
 option(RUN_UNIT_TEST "Build and register unit tests" ON)
 option(RUN_REGRESS_TEST "Build and register regression tests" OFF)
@@ -198,7 +198,7 @@ endif()
 ## Build ##
 ###########
 
-set(LIRPA_LIB LIRPACore)
+set(LUNA_LIB LUNACore)
 set(BIN_DIR "${CMAKE_BINARY_DIR}/bin")
 
 # Compiler flags
@@ -222,57 +222,57 @@ list(APPEND LIBS Threads::Threads)
 
 # Create core library with ONNX dependencies
 # Subdirectories will add their sources via target_sources()
-add_library(${LIRPA_LIB} ${DEPS_ONNX})
+add_library(${LUNA_LIB} ${DEPS_ONNX})
 
 # Set base include directories
-target_include_directories(${LIRPA_LIB} PUBLIC
+target_include_directories(${LUNA_LIB} PUBLIC
     ${SRC_DIR}
     ${LIBS_INCLUDES}
 )
 
 # Link libraries
-if (BUILD_STATIC_LIRPA)
-  target_link_libraries(${LIRPA_LIB} ${LIBS} -static)
+if (BUILD_STATIC_LUNA)
+  target_link_libraries(${LUNA_LIB} ${LIBS} -static)
 else()
-  target_link_libraries(${LIRPA_LIB} ${LIBS})
+  target_link_libraries(${LUNA_LIB} ${LIBS})
 endif()
 
-target_compile_options(${LIRPA_LIB} PRIVATE ${RELEASE_FLAGS})
+target_compile_options(${LUNA_LIB} PRIVATE ${RELEASE_FLAGS})
 
-# Add subdirectories - each will populate LIRPACore using target_sources()
+# Add subdirectories - each will populate LUNACore using target_sources()
 add_subdirectory(src/common)
 add_subdirectory(src/engine)
 add_subdirectory(src/input_parsers)
 add_subdirectory(src/configuration)
 
-# Build main lirpa executable
-add_executable(lirpa src/main.cpp src/engine/LirpaMain.cpp)
-target_link_libraries(lirpa ${LIRPA_LIB})
-target_include_directories(lirpa PRIVATE
+# Build main luna executable
+add_executable(luna src/main.cpp src/engine/LunaMain.cpp)
+target_link_libraries(luna ${LUNA_LIB})
+target_include_directories(luna PRIVATE
     ${SRC_DIR}
     ${LIBS_INCLUDES}
 )
-target_compile_options(lirpa PRIVATE ${RELEASE_FLAGS})
+target_compile_options(luna PRIVATE ${RELEASE_FLAGS})
 
-# Copy lirpa executable to bin directory
-add_custom_command(TARGET lirpa POST_BUILD
+# Copy luna executable to bin directory
+add_custom_command(TARGET luna POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BIN_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lirpa> ${BIN_DIR}/
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:luna> ${BIN_DIR}/
 )
 
-# Install lirpa executable to user-local bin directory (~/.local/bin)
+# Install luna executable to user-local bin directory (~/.local/bin)
 # This directory is typically already in PATH on macOS/Linux
 set(USER_LOCAL_BIN "$ENV{HOME}/.local/bin")
-install(TARGETS lirpa
+install(TARGETS luna
     RUNTIME DESTINATION ${USER_LOCAL_BIN}
     COMPONENT Runtime
 )
 
-# Automatically install to ~/.local/bin after build (so user can run 'lirpa' from anywhere)
-add_custom_command(TARGET lirpa POST_BUILD
+# Automatically install to ~/.local/bin after build (so user can run 'luna' from anywhere)
+add_custom_command(TARGET luna POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${USER_LOCAL_BIN}
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:lirpa> ${USER_LOCAL_BIN}/
-    COMMENT "Installing lirpa to ${USER_LOCAL_BIN} (add to PATH if needed)"
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:luna> ${USER_LOCAL_BIN}/
+    COMMENT "Installing luna to ${USER_LOCAL_BIN} (add to PATH if needed)"
 )
 
 ###################
@@ -318,11 +318,11 @@ endif()
 #######################
 
 if(BUILD_PYTHON_BINDINGS)
-    add_subdirectory(lirpapy)
+    add_subdirectory(lunapy)
 endif()
 
-message(STATUS "LIRPA configured successfully")
-message(STATUS "  - LIRPA Version: ${LIRPA_VERSION}")
+message(STATUS "LUNA configured successfully")
+message(STATUS "  - LUNA Version: ${LUNA_VERSION}")
 message(STATUS "  - Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  - PyTorch version: ${PYTORCH_VERSION}")
 message(STATUS "  - Boost version: ${BOOST_VERSION}")

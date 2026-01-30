@@ -1,6 +1,6 @@
 #include "BoundedReLUNode.h"
 #include "AlphaCROWNAnalysis.h"
-#include "LirpaConfiguration.h"
+#include "LunaConfiguration.h"
 #include "conv/Patches.h"
 #include <algorithm>
 #include <sstream>
@@ -80,7 +80,7 @@ void BoundedReLUNode::boundBackward(
     _currentSpecDim = specDim;  // Store for use in _maskAlpha
 
     // DEBUG: Print spec dimension
-    if (LirpaConfiguration::VERBOSE) {
+    if (LunaConfiguration::VERBOSE) {
         printf("[DEBUG BoundedReLUNode::backward] node=%u, specDim=%d", getNodeIndex(), specDim);
         if (last_lA.defined() && last_lA.isTensor()) {
             auto t = last_lA.asTensor();
@@ -531,7 +531,7 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
         unsigned outputIndex = crown->getOutputIndex();
         std::string outputKey = "/" + std::to_string(outputIndex);
 
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             printf("[DEBUG _maskAlpha] node=%u, startKey=%s, outputKey=%s, match=%s\n",
                    getNodeIndex(), startKey.c_str(), outputKey.c_str(),
                    (startKey == outputKey) ? "YES (apply alpha)" : "NO (skip alpha)");
@@ -561,7 +561,7 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
             startKey, specDim, outDim,
             input_lower, input_upper); // Returns [spec, out]
 
-        if (LirpaConfiguration::VERBOSE && alpha_tensor.defined()) {
+        if (LunaConfiguration::VERBOSE && alpha_tensor.defined()) {
             printf("[DEBUG _maskAlpha] node=%u, alpha_tensor shape=[%lld,%lld], mean=%.4f, min=%.4f, max=%.4f\n",
                    getNodeIndex(),
                    alpha_tensor.dim() >= 1 ? (long long)alpha_tensor.size(0) : 0,

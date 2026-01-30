@@ -30,6 +30,6 @@ target_compile_options(TestFixtures PRIVATE ${TEST_COMPILE_FLAGS})
 
 # Link libraries (combine into one call)
 target_link_libraries(TestFixtures PUBLIC
-    ${LIRPA_LIB}
+    ${LUNA_LIB}
     ${LIBS}
 )

@@ -4,7 +4,7 @@
 
 #include "Debug.h"
 #include "MStringf.h"
-#include "LirpaError.h"
+#include "LunaError.h"
 #include "TimeUtils.h"
 
 #include <vector>
@@ -112,7 +112,7 @@ void CROWNAnalysis::ensureCenterActivations() {
 CROWNAnalysis::CROWNAnalysis( TorchModel *torchModel )
     : _torchModel( torchModel )
 {
-    // Configuration is now accessed via LirpaConfiguration static members 
+    // Configuration is now accessed via LunaConfiguration static members 
     // Get all nodes from the torch model
     const Vector<std::shared_ptr<BoundedTorchNode>>& nodes = _torchModel->getNodes();
     
@@ -151,7 +151,7 @@ void CROWNAnalysis::run(bool enableGradients)
         // to avoid in-place modification conflicts during multiple backward passes.
         // The standard CROWN mode with multiple backward passes causes issues with PyTorch's autograd
         // when the same alpha tensors are accessed from different computation graphs.
-        bool useStandardCrown = LirpaConfiguration::USE_STANDARD_CROWN && !enableGradients;
+        bool useStandardCrown = LunaConfiguration::USE_STANDARD_CROWN && !enableGradients;
         
         if (useStandardCrown) {
             // Standard CROWN: Selective backward passes for ReLU layers
@@ -450,7 +450,7 @@ void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& un
         torch::Tensor specMatrix = _torchModel->getSpecificationMatrix();
         
         // DEBUG: Print specification matrix before preprocessing
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             printf("[DEBUG] Specification matrix (raw) shape: [");
             for (int i = 0; i < specMatrix.dim(); ++i) {
                 if (i > 0) printf(", ");
@@ -480,7 +480,7 @@ void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& un
                     initMatrix.size(0), initMatrix.size(1), initMatrix.size(2)));
         
         // DEBUG: Print preprocessed matrix
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             printf("[DEBUG] Preprocessed initMatrix shape: [%lld, %lld, %lld]\n",
                    (long long)initMatrix.size(0), (long long)initMatrix.size(1), (long long)initMatrix.size(2));
             if (initMatrix.numel() <= 20) {
@@ -630,7 +630,7 @@ void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& un
         torch::Tensor lbias, ubias;
         
         // Check if we can skip full CROWN computation for first linear layer
-        if (checkIBPFirstLinear(current) && !LirpaConfiguration::USE_STANDARD_CROWN) {
+        if (checkIBPFirstLinear(current) && !LunaConfiguration::USE_STANDARD_CROWN) {
             // For first linear layers connected directly to inputs, IBP bounds are sufficient
             // and we can avoid the expensive CROWN backward computation and C matrix construction
             log(Stringf("backwardFrom() -  Skipping CROWN backward for first linear layer %u (using IBP)", current));
@@ -957,7 +957,7 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
     BoundA uA_bound = _uA.exists(inputIndex) ? _uA[inputIndex] : BoundA();
     
     // DEBUG: Print A matrix statistics at input node for output node
-    if (LirpaConfiguration::VERBOSE && startIndex == getOutputIndex() && lA_bound.isTensor()) {
+    if (LunaConfiguration::VERBOSE && startIndex == getOutputIndex() && lA_bound.isTensor()) {
         torch::Tensor lA_tensor = lA_bound.asTensor();
         printf("[DEBUG concretizeNode] A matrix at input node %d for output node %u:\n", inputIndex, startIndex);
         printf("  lA shape: [");
@@ -1083,7 +1083,7 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
         concreteLower.defined(), concreteUpper.defined()));
     
     // DEBUG: Print concrete bounds and A matrix info
-    if (LirpaConfiguration::VERBOSE && concreteLower.defined() && concreteUpper.defined()) {
+    if (LunaConfiguration::VERBOSE && concreteLower.defined() && concreteUpper.defined()) {
         printf("[DEBUG concretizeNode] Node %u concrete bounds:\n", startIndex);
         printf("  Lower: shape=[%lld], values=[", (long long)concreteLower.numel());
         auto lower_flat = concreteLower.flatten();
@@ -1321,7 +1321,7 @@ Vector<BoundedTensor<torch::Tensor>> CROWNAnalysis::getInputBoundsForNode(unsign
                     upper = fixedIt->second.second;
                 }
                 // Otherwise prefer CROWN concrete bounds in standard mode; otherwise IBP
-                else if (LirpaConfiguration::USE_STANDARD_CROWN && _concreteBounds.exists(inputIndex)) {
+                else if (LunaConfiguration::USE_STANDARD_CROWN && _concreteBounds.exists(inputIndex)) {
                     lower = _concreteBounds[inputIndex].lower();
                     upper = _concreteBounds[inputIndex].upper();
                 } else if (_ibpBounds.exists(inputIndex)) {
@@ -1475,7 +1475,7 @@ torch::Tensor CROWNAnalysis::computeConcreteLowerBound(
     torch::Tensor out  = term + bL;                              // (1,spec,1)
 
     // DEBUG: Print detailed bound computation info
-    if (LirpaConfiguration::VERBOSE) {
+    if (LunaConfiguration::VERBOSE) {
         printf("[DEBUG computeConcreteLowerBound]\n");
         printf("  AL shape: [%lld, %lld, %lld]\n", (long long)AL.size(0), (long long)AL.size(1), (long long)AL.size(2));
         printf("  xL range: [%.6f, %.6f]\n", xL.min().item<float>(), xL.max().item<float>());
@@ -1513,7 +1513,7 @@ torch::Tensor CROWNAnalysis::computeConcreteUpperBound(
     torch::Tensor out  = term + bU;                              // (1,spec,1)
 
     // DEBUG: Print detailed bound computation info
-    if (LirpaConfiguration::VERBOSE) {
+    if (LunaConfiguration::VERBOSE) {
         printf("[DEBUG computeConcreteUpperBound]\n");
         printf("  AU shape: [%lld, %lld, %lld]\n", (long long)AU.size(0), (long long)AU.size(1), (long long)AU.size(2));
         printf("  AU range: [%.6f, %.6f], sum=%.6f\n", AU.min().item<float>(), AU.max().item<float>(), AU.sum().item<float>());
@@ -1869,7 +1869,7 @@ BoundedTensor<torch::Tensor> CROWNAnalysis::getOutputBounds() const
         auto bounds = _concreteBounds[outputIndex];
         
         // DEBUG: Print output bounds being returned
-        if (LirpaConfiguration::VERBOSE && bounds.lower().defined() && bounds.upper().defined()) {
+        if (LunaConfiguration::VERBOSE && bounds.lower().defined() && bounds.upper().defined()) {
             printf("[DEBUG getOutputBounds] Returning bounds for output node %u:\n", outputIndex);
             printf("  Lower: shape=[%lld], ", (long long)bounds.lower().numel());
             auto lower_flat = bounds.lower().flatten();
@@ -2002,7 +2002,7 @@ bool CROWNAnalysis::needsCROWNBounds(unsigned nodeIndex)
 // First linear layer IBP fast path optimization methods
 bool CROWNAnalysis::checkIBPFirstLinear(unsigned nodeIndex)
 {
-    if (!LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP) {
+    if (!LunaConfiguration::ENABLE_FIRST_LINEAR_IBP) {
         return false;
     }
 

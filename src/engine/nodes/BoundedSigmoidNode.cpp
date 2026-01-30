@@ -1,6 +1,6 @@
 #include "BoundedSigmoidNode.h"
 #include "AlphaCROWNAnalysis.h"
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 #include "conv/Patches.h"
 #include "Debug.h"
 #include <algorithm>
@@ -11,7 +11,7 @@ namespace NLR {
 BoundedSigmoidNode::BoundedSigmoidNode(const torch::nn::Sigmoid& sigmoidModule, const String& name)
     : BoundedAlphaOptimizeNode()
     , _sigmoidModule(std::make_shared<torch::nn::Sigmoid>(sigmoidModule))
-    , x_limit(LirpaConfiguration::SIGMOID_CUTOFF_CONSTANT) {
+    , x_limit(LunaConfiguration::SIGMOID_CUTOFF_CONSTANT) {
     _nodeName = name;
     _nodeIndex = 0;
     _input_size = 0;
@@ -69,7 +69,7 @@ void BoundedSigmoidNode::precomputeRelaxation() {
         return;
     }
     
-    x_limit = LirpaConfiguration::SIGMOID_CUTOFF_CONSTANT;
+    x_limit = LunaConfiguration::SIGMOID_CUTOFF_CONSTANT;
     step_pre = 0.01;
     num_points_pre = static_cast<int>(x_limit / step_pre);
     int max_iter = 100;

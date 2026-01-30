@@ -1,10 +1,10 @@
 """
-Basic tests for lirpapy core functionality
+Basic tests for lunapy core functionality
 """
 
 import pytest
 import numpy as np
-from lirpapy import TorchModel, BoundedTensor, LirpaConfiguration
+from lunapy import TorchModel, BoundedTensor, LunaConfiguration
 
 
 class TestBoundedTensor:
@@ -125,44 +125,44 @@ class TestInputBounds:
 
 
 class TestConfiguration:
-    """Tests for LirpaConfiguration"""
+    """Tests for LunaConfiguration"""
     
     def test_configuration_exists(self):
-        """Test that LirpaConfiguration is accessible"""
-        assert LirpaConfiguration is not None
+        """Test that LunaConfiguration is accessible"""
+        assert LunaConfiguration is not None
     
     def test_set_verbose(self):
         """Test setting VERBOSE flag"""
-        original = LirpaConfiguration.VERBOSE
+        original = LunaConfiguration.VERBOSE
         
-        LirpaConfiguration.VERBOSE = True
-        assert LirpaConfiguration.VERBOSE == True
+        LunaConfiguration.VERBOSE = True
+        assert LunaConfiguration.VERBOSE == True
         
-        LirpaConfiguration.VERBOSE = False
-        assert LirpaConfiguration.VERBOSE == False
+        LunaConfiguration.VERBOSE = False
+        assert LunaConfiguration.VERBOSE == False
         
         # Restore
-        LirpaConfiguration.VERBOSE = original
+        LunaConfiguration.VERBOSE = original
     
     def test_set_alpha_iterations(self):
         """Test setting ALPHA_ITERATIONS"""
-        original = LirpaConfiguration.ALPHA_ITERATIONS
+        original = LunaConfiguration.ALPHA_ITERATIONS
         
-        LirpaConfiguration.ALPHA_ITERATIONS = 50
-        assert LirpaConfiguration.ALPHA_ITERATIONS == 50
+        LunaConfiguration.ALPHA_ITERATIONS = 50
+        assert LunaConfiguration.ALPHA_ITERATIONS == 50
         
         # Restore
-        LirpaConfiguration.ALPHA_ITERATIONS = original
+        LunaConfiguration.ALPHA_ITERATIONS = original
     
     def test_set_alpha_lr(self):
         """Test setting ALPHA_LR"""
-        original = LirpaConfiguration.ALPHA_LR
+        original = LunaConfiguration.ALPHA_LR
         
-        LirpaConfiguration.ALPHA_LR = 0.05
-        assert abs(LirpaConfiguration.ALPHA_LR - 0.05) < 1e-6
+        LunaConfiguration.ALPHA_LR = 0.05
+        assert abs(LunaConfiguration.ALPHA_LR - 0.05) < 1e-6
         
         # Restore
-        LirpaConfiguration.ALPHA_LR = original
+        LunaConfiguration.ALPHA_LR = original
 
 
 class TestErrorHandling:

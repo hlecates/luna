@@ -10,7 +10,7 @@
 #include "Set.h"
 #include "Queue.h"
 #include "input_parsers/OutputConstraint.h"
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 
 #include <torch/torch.h>
 #include <memory>
@@ -76,7 +76,7 @@ public:
     // First linear layer IBP fast path optimization
     bool checkIBPFirstLinear(unsigned nodeIndex);
     bool isFirstLinearLayer(unsigned nodeIndex);
-    // Configuration gating: use LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP directly
+    // Configuration gating: use LunaConfiguration::ENABLE_FIRST_LINEAR_IBP directly
 
 
     void computeIBPBounds();
@@ -130,7 +130,7 @@ public:
 
 private:
     TorchModel *_torchModel;
-    // Configuration is now accessed via LirpaConfiguration static members
+    // Configuration is now accessed via LunaConfiguration static members
     // Removed _useStandardCROWN and _enableFirstLinearIBP member variables
 
     // Node-centric graph structure (delegated to TorchModel)

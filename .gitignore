@@ -54,8 +54,6 @@ _deps/
 /tools/pybind11-*/
 /tools/pybind11*.tar.gz
 
-run_linearize_benchmarks.py
-
 # ============================================================================
 # IDE and Editor files
 # ============================================================================
@@ -129,8 +127,8 @@ core.*
 # ============================================================================
 
 # Dependency analysis outputs
-lirpa_deps.*
-lirpa_manifest.txt
+luna_deps.*
+luna_manifest.txt
 dependency_graph.*
 analyze_deps.py
 
@@ -148,7 +146,7 @@ gmon.out
 callgrind.out.*
 
 # ============================================================================
-# LIRPA-specific outputs
+# LUNA-specific outputs
 # ============================================================================
 
 # ONNX models (keep small examples, ignore large ones)
@@ -218,3 +216,24 @@ vcpkg_installed/
 # Downloaded dependency archives (large files)
 tools/*.tar.gz
 tools/*.zip
+
+# ============================================================================
+# Other
+# ============================================================================
+
+abcrown_cpu_q_aggregated.csv
+abcrown_cpu_q_instances.csv
+
+lirpa_cpu_q_aggregated.csv
+lirpa_cpu_q_instances.csv
+
+worst_instances.csv
+
+test_two_layer_auto_lirpa.py
+
+
+
+run_linearize_benchmarks.py
+run_benchmark_comparison.py
+
+dump_onnx.py

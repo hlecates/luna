@@ -1,10 +1,10 @@
 #!/bin/bash
-# Convenience script to run lirpapy tests
+# Convenience script to run lunapy tests
 
 set -e  # Exit on error
 
 echo "=================================================="
-echo "lirpapy Test Suite"
+echo "lunapy Test Suite"
 echo "=================================================="
 echo ""
 
@@ -15,9 +15,9 @@ if ! command -v pytest &> /dev/null; then
     exit 1
 fi
 
-# Check if lirpapy is installed
-python -c "import lirpapy" 2>/dev/null || {
-    echo "Error: lirpapy not installed"
+# Check if lunapy is installed
+python -c "import lunapy" 2>/dev/null || {
+    echo "Error: lunapy not installed"
     echo "Install with: pip install -e ."
     exit 1
 }
@@ -69,7 +69,7 @@ else
 fi
 
 if [ "$COVERAGE" = true ]; then
-    PYTEST_CMD="$PYTEST_CMD --cov=lirpapy --cov-report=term --cov-report=html"
+    PYTEST_CMD="$PYTEST_CMD --cov=lunapy --cov-report=term --cov-report=html"
 fi
 
 if [ -n "$TEST_FILE" ]; then

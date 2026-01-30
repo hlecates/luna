@@ -2,13 +2,13 @@
 """
 Example 1: Basic Usage
 
-This example demonstrates the most basic usage of lirpapy:
+This example demonstrates the most basic usage of lunapy:
 - Loading an ONNX model with VNN-LIB bounds
 - Computing bounds using CROWN
 - Accessing the results
 """
 
-from lirpapy import TorchModel
+from lunapy import TorchModel
 import numpy as np
 from pathlib import Path
 
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         main()
     except FileNotFoundError as e:
         print(f"Error: Could not find test files: {e}")
-        print("Make sure you're running from the lirpapy/examples directory")
+        print("Make sure you're running from the lunapy/examples directory")
         print("and that resources directory exists in the repository root.")
     except Exception as e:
         print(f"Error: {e}")

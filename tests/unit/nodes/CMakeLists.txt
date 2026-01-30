@@ -4,7 +4,7 @@
 set(NODES_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 function(add_node_test TEST_NAME)
-    lirpa_add_test(${TEST_NAME} ${TEST_NAME}.cpp "nodes" "unit")
+    luna_add_test(${TEST_NAME} ${TEST_NAME}.cpp "nodes" "unit")
 endfunction()
 
 # Node tests

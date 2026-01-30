@@ -1,6 +1,6 @@
 #include "src/engine/TorchModel.h"
 #include "src/engine/CROWNAnalysis.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "src/common/BoundedTensor.h"
 #include "src/engine/nodes/BoundedInputNode.h"
 #include "src/engine/nodes/BoundedConvNode.h"
@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
         }
 #
         // CROWN bounds must be sound: center output contained.
-        auto out = model.compute_bounds(inputBounds, nullptr, LirpaConfiguration::AnalysisMethod::CROWN, true, true);
+        auto out = model.compute_bounds(inputBounds, nullptr, LunaConfiguration::AnalysisMethod::CROWN, true, true);
         assertCenterContained(model, inputBounds, out);
 #
         std::cout << "Passed\n";

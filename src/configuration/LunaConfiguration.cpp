@@ -1,4 +1,4 @@
-#include "LirpaConfiguration.h"
+#include "LunaConfiguration.h"
 #include "MString.h"
 #include "ConfigurationError.h"
 
@@ -11,54 +11,54 @@
 // Initialize static members with default values
 
 // Analysis settings
-LirpaConfiguration::AnalysisMethod LirpaConfiguration::ANALYSIS_METHOD = 
-    LirpaConfiguration::AnalysisMethod::CROWN;
-bool LirpaConfiguration::COMPUTE_LOWER = true;
-bool LirpaConfiguration::COMPUTE_UPPER = true;
-bool LirpaConfiguration::VERBOSE = true;
+LunaConfiguration::AnalysisMethod LunaConfiguration::ANALYSIS_METHOD = 
+    LunaConfiguration::AnalysisMethod::CROWN;
+bool LunaConfiguration::COMPUTE_LOWER = true;
+bool LunaConfiguration::COMPUTE_UPPER = true;
+bool LunaConfiguration::VERBOSE = true;
 
 // Alpha-CROWN settings
-unsigned LirpaConfiguration::ALPHA_ITERATIONS = 20;
-float LirpaConfiguration::ALPHA_LR = 0.5f;
-float LirpaConfiguration::ALPHA_LR_DECAY = 0.98f;
-bool LirpaConfiguration::KEEP_BEST = true;
-bool LirpaConfiguration::USE_SHARED_ALPHA = false;
-unsigned LirpaConfiguration::EARLY_STOP_PATIENCE = 10;
-bool LirpaConfiguration::FIX_INTERM_BOUNDS = true;
-String LirpaConfiguration::OPTIMIZER = "adam";
-float LirpaConfiguration::START_SAVE_BEST = 0.5f;
-LirpaConfiguration::BoundSide LirpaConfiguration::BOUND_SIDE = 
-    LirpaConfiguration::BoundSide::Lower;
-bool LirpaConfiguration::OPTIMIZE_LOWER = true;
-bool LirpaConfiguration::OPTIMIZE_UPPER = false;
+unsigned LunaConfiguration::ALPHA_ITERATIONS = 20;
+float LunaConfiguration::ALPHA_LR = 0.5f;
+float LunaConfiguration::ALPHA_LR_DECAY = 0.98f;
+bool LunaConfiguration::KEEP_BEST = true;
+bool LunaConfiguration::USE_SHARED_ALPHA = false;
+unsigned LunaConfiguration::EARLY_STOP_PATIENCE = 10;
+bool LunaConfiguration::FIX_INTERM_BOUNDS = true;
+String LunaConfiguration::OPTIMIZER = "adam";
+float LunaConfiguration::START_SAVE_BEST = 0.5f;
+LunaConfiguration::BoundSide LunaConfiguration::BOUND_SIDE = 
+    LunaConfiguration::BoundSide::Lower;
+bool LunaConfiguration::OPTIMIZE_LOWER = true;
+bool LunaConfiguration::OPTIMIZE_UPPER = false;
 
 // CROWN settings
-bool LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = true;
-bool LirpaConfiguration::USE_STANDARD_CROWN = true;
+bool LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = true;
+bool LunaConfiguration::USE_STANDARD_CROWN = true;
 
 // Runtime options
-int LirpaConfiguration::VERBOSITY = 0;
-int LirpaConfiguration::TIMEOUT = 0;
-int LirpaConfiguration::SEED = 1;
-int LirpaConfiguration::NUM_BLAS_THREADS = 1;
-String LirpaConfiguration::INPUT_FILE_PATH = "";
-String LirpaConfiguration::PROPERTY_FILE_PATH = "";
+int LunaConfiguration::VERBOSITY = 0;
+int LunaConfiguration::TIMEOUT = 0;
+int LunaConfiguration::SEED = 1;
+int LunaConfiguration::NUM_BLAS_THREADS = 1;
+String LunaConfiguration::INPUT_FILE_PATH = "";
+String LunaConfiguration::PROPERTY_FILE_PATH = "";
 
 // Device options
-bool LirpaConfiguration::USE_CUDA = torch::cuda::is_available();
-int LirpaConfiguration::CUDA_DEVICE_ID = 0;
-torch::Device LirpaConfiguration::DEVICE =
-    LirpaConfiguration::USE_CUDA ? torch::Device(torch::kCUDA, CUDA_DEVICE_ID)
+bool LunaConfiguration::USE_CUDA = torch::cuda::is_available();
+int LunaConfiguration::CUDA_DEVICE_ID = 0;
+torch::Device LunaConfiguration::DEVICE =
+    LunaConfiguration::USE_CUDA ? torch::Device(torch::kCUDA, CUDA_DEVICE_ID)
                                  : torch::Device(torch::kCPU);
 
 // Utility constants (replacing GlobalConfiguration constants)
-const double LirpaConfiguration::DEFAULT_EPSILON_FOR_COMPARISONS = 0.0000000001;
-const unsigned LirpaConfiguration::DEFAULT_DOUBLE_TO_STRING_PRECISION = 10;
-bool LirpaConfiguration::NETWORK_LEVEL_REASONER_LOGGING = true;
-const double LirpaConfiguration::SIGMOID_CUTOFF_CONSTANT = 20.0;
+const double LunaConfiguration::DEFAULT_EPSILON_FOR_COMPARISONS = 0.0000000001;
+const unsigned LunaConfiguration::DEFAULT_DOUBLE_TO_STRING_PRECISION = 10;
+bool LunaConfiguration::NETWORK_LEVEL_REASONER_LOGGING = true;
+const double LunaConfiguration::SIGMOID_CUTOFF_CONSTANT = 20.0;
 
 // Helper methods for string conversion
-String LirpaConfiguration::analysisMethodToString(AnalysisMethod method)
+String LunaConfiguration::analysisMethodToString(AnalysisMethod method)
 {
     switch (method) {
         case AnalysisMethod::CROWN:
@@ -70,7 +70,7 @@ String LirpaConfiguration::analysisMethodToString(AnalysisMethod method)
     }
 }
 
-LirpaConfiguration::AnalysisMethod LirpaConfiguration::stringToAnalysisMethod(const String& str)
+LunaConfiguration::AnalysisMethod LunaConfiguration::stringToAnalysisMethod(const String& str)
 {
     if (str == "crown" || str == "CROWN") {
         return AnalysisMethod::CROWN;
@@ -81,7 +81,7 @@ LirpaConfiguration::AnalysisMethod LirpaConfiguration::stringToAnalysisMethod(co
     }
 }
 
-String LirpaConfiguration::boundSideToString(BoundSide side)
+String LunaConfiguration::boundSideToString(BoundSide side)
 {
     switch (side) {
         case BoundSide::Lower:
@@ -93,7 +93,7 @@ String LirpaConfiguration::boundSideToString(BoundSide side)
     }
 }
 
-LirpaConfiguration::BoundSide LirpaConfiguration::stringToBoundSide(const String& str)
+LunaConfiguration::BoundSide LunaConfiguration::stringToBoundSide(const String& str)
 {
     if (str == "lower" || str == "Lower" || str == "LOWER") {
         return BoundSide::Lower;
@@ -104,7 +104,7 @@ LirpaConfiguration::BoundSide LirpaConfiguration::stringToBoundSide(const String
     }
 }
 
-void LirpaConfiguration::resetToDefaults()
+void LunaConfiguration::resetToDefaults()
 {
     // Analysis settings
     ANALYSIS_METHOD = AnalysisMethod::CROWN;
@@ -148,9 +148,9 @@ void LirpaConfiguration::resetToDefaults()
     NETWORK_LEVEL_REASONER_LOGGING = true;
 }
 
-void LirpaConfiguration::print()
+void LunaConfiguration::print()
 {
-    printf("*** LIRPA Configuration ***\n");
+    printf("*** LUNA Configuration ***\n");
 
     // Analysis settings
     printf("Analysis Settings:\n");
@@ -196,12 +196,12 @@ void LirpaConfiguration::print()
     
 }
 
-torch::Device LirpaConfiguration::getDevice()
+torch::Device LunaConfiguration::getDevice()
 {
     return DEVICE;
 }
 
-void LirpaConfiguration::updateDeviceFromFlags()
+void LunaConfiguration::updateDeviceFromFlags()
 {
     if (USE_CUDA && !torch::cuda::is_available()) {
         USE_CUDA = false;
@@ -213,7 +213,7 @@ void LirpaConfiguration::updateDeviceFromFlags()
     }
 }
 
-void LirpaConfiguration::parseArgs(int argc, char** argv)
+void LunaConfiguration::parseArgs(int argc, char** argv)
 {
     for (int i = 1; i < argc; ++i) {
         String arg(argv[i]);
@@ -332,7 +332,7 @@ void LirpaConfiguration::parseArgs(int argc, char** argv)
         }
         // Help
         else if (arg == "--help" || arg == "-h") {
-            printf("LIRPA Configuration Options:\n");
+            printf("LUNA Configuration Options:\n");
             printf("  --method <crown|alpha-crown>    Analysis method (default: crown)\n");
             printf("  --iterations <n>                Alpha-CROWN iterations (default: 20)\n");
             printf("  --lr <float>                    Learning rate (default: 0.5)\n");

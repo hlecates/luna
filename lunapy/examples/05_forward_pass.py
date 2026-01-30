@@ -8,7 +8,7 @@ This example demonstrates:
 - Sampling inputs within bound regions
 """
 
-from lirpapy import TorchModel
+from lunapy import TorchModel
 import numpy as np
 from pathlib import Path
 

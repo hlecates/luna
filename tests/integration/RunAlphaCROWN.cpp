@@ -1,7 +1,7 @@
 #include "src/engine/AlphaCROWNAnalysis.h"
 #include "src/engine/CROWNAnalysis.h"
 #include "src/engine/TorchModel.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "src/engine/nodes/BoundedInputNode.h"
 #include "src/engine/nodes/BoundedLinearNode.h"
 #include "src/engine/nodes/BoundedReLUNode.h"
@@ -641,19 +641,19 @@ void runAlphaCROWNAnalysis(NLR::TorchModel* model, const std::string& networkNam
         torch::Tensor upperBounds = torch::ones({(long)inputSize}, torch::kFloat64);
         BoundedTensor<torch::Tensor> inputBounds(lowerBounds, upperBounds);
 
-        // Configure analysis using LirpaConfiguration
-        LirpaConfiguration::ANALYSIS_METHOD = LirpaConfiguration::AnalysisMethod::AlphaCROWN;
-        LirpaConfiguration::ALPHA_ITERATIONS = iterations;
-        LirpaConfiguration::ALPHA_LR = 0.5f;
-        LirpaConfiguration::OPTIMIZE_LOWER = true;
-        LirpaConfiguration::OPTIMIZE_UPPER = true;
-        LirpaConfiguration::VERBOSE = true;
+        // Configure analysis using LunaConfiguration
+        LunaConfiguration::ANALYSIS_METHOD = LunaConfiguration::AnalysisMethod::AlphaCROWN;
+        LunaConfiguration::ALPHA_ITERATIONS = iterations;
+        LunaConfiguration::ALPHA_LR = 0.5f;
+        LunaConfiguration::OPTIMIZE_LOWER = true;
+        LunaConfiguration::OPTIMIZE_UPPER = true;
+        LunaConfiguration::VERBOSE = true;
 
         // Run Alpha-CROWN analysis using unified compute_bounds() method
         BoundedTensor<torch::Tensor> alphaCrownResult = model->compute_bounds(
             inputBounds,
             nullptr,  // No specification matrix
-            LirpaConfiguration::AnalysisMethod::AlphaCROWN,
+            LunaConfiguration::AnalysisMethod::AlphaCROWN,
             true,   // compute lower bounds
             true    // compute upper bounds
         );
@@ -680,7 +680,7 @@ void runAlphaCROWNAnalysis(NLR::TorchModel* model, const std::string& networkNam
         BoundedTensor<torch::Tensor> crownResult = model->compute_bounds(
             inputBounds,
             nullptr,  // No specification matrix
-            LirpaConfiguration::AnalysisMethod::CROWN,
+            LunaConfiguration::AnalysisMethod::CROWN,
             true,   // compute lower bounds
             true    // compute upper bounds
         );
@@ -708,10 +708,10 @@ void runAlphaCROWNAnalysis(NLR::TorchModel* model, const std::string& networkNam
 
 int main(int argc, char** argv) {
     // Parse command line arguments for configuration
-    LirpaConfiguration::parseArgs(argc, argv);
+    LunaConfiguration::parseArgs(argc, argv);
     
     std::string networkType = "both";  // existing default
-    unsigned iterations = LirpaConfiguration::ALPHA_ITERATIONS;
+    unsigned iterations = LunaConfiguration::ALPHA_ITERATIONS;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg(argv[i]);

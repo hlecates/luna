@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "src/engine/TorchModel.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "fixtures/model_builders.h"
 #include "fixtures/test_utils.h"
 #include <torch/torch.h>
@@ -18,9 +18,9 @@ protected:
             at::set_num_interop_threads(1);
             threadsConfigured = true;
         }
-        LirpaConfiguration::ALPHA_ITERATIONS = 5;
-        LirpaConfiguration::OPTIMIZE_LOWER = true;
-        LirpaConfiguration::OPTIMIZE_UPPER = false;
+        LunaConfiguration::ALPHA_ITERATIONS = 5;
+        LunaConfiguration::OPTIMIZE_LOWER = true;
+        LunaConfiguration::OPTIMIZE_UPPER = false;
     }
 };
 

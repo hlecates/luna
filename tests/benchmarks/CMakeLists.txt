@@ -9,7 +9,7 @@ if(BUILD_BENCHMARKS)
         
         target_link_libraries(${BENCH_NAME}
             TestFixtures
-            ${LIRPA_LIB}
+            ${LUNA_LIB}
             benchmark::benchmark
             ${LIBS}
         )

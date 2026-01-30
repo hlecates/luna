@@ -48,11 +48,11 @@ int main(int argc, char* argv[]) {
         if (argc >= 2) {
             onnxFilePath = argv[1];
         } else {
-            // Try a few common working directories (repo root vs lirpa/build).
+            // Try a few common working directories (repo root vs luna/build).
             const char* candidates[] = {
-                "../resources/onnx/layer-zoo/batchnorm.onnx",          // when cwd is lirpa/build
-                "resources/onnx/layer-zoo/batchnorm.onnx",             // when cwd is lirpa/
-                "lirpa/resources/onnx/layer-zoo/batchnorm.onnx"        // when cwd is repo root
+                "../resources/onnx/layer-zoo/batchnorm.onnx",          // when cwd is luna/build
+                "resources/onnx/layer-zoo/batchnorm.onnx",             // when cwd is luna/
+                "luna/resources/onnx/layer-zoo/batchnorm.onnx"        // when cwd is repo root
             };
             for (const char* p : candidates) {
                 std::ifstream fin(p, std::ios::binary);

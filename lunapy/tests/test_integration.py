@@ -4,7 +4,7 @@ Integration tests for complete workflows
 
 import pytest
 import numpy as np
-from lirpapy import TorchModel, LirpaConfiguration
+from lunapy import TorchModel, LunaConfiguration
 
 
 class TestCompleteWorkflow:
@@ -55,7 +55,7 @@ class TestCompleteWorkflow:
         crown_width = np.sum(crown_bounds.upper() - crown_bounds.lower())
         
         # Run Alpha-CROWN
-        LirpaConfiguration.ALPHA_ITERATIONS = 10
+        LunaConfiguration.ALPHA_ITERATIONS = 10
         alpha_bounds = model.compute_bounds(method='alpha-CROWN')
         alpha_width = np.sum(alpha_bounds.upper() - alpha_bounds.lower())
         

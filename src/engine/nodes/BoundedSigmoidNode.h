@@ -2,7 +2,7 @@
 #define __BOUNDED_SIGMOID_NODE_H__
 
 #include "BoundedAlphaOptimizedNode.h"
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 
 namespace NLR {
 
@@ -87,7 +87,7 @@ private:
     // Configuration for lookup tables
     double step_pre = 0.01;
     int num_points_pre = 0;
-    double x_limit = 20.0;  // SIGMOID_CUTOFF_CONSTANT from LirpaConfiguration
+    double x_limit = 20.0;  // SIGMOID_CUTOFF_CONSTANT from LunaConfiguration
     bool _lookupTablesInitialized = false;
     
     // Helper methods for lookup table generation and retrieval

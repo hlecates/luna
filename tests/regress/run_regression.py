@@ -5,7 +5,7 @@ import sys
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Placeholder Python regression runner for LIRPA."
+        description="Placeholder Python regression runner for LUNA."
     )
     parser.add_argument("--list", action="store_true", help="List available tests")
     args = parser.parse_args()

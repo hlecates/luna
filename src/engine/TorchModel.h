@@ -13,7 +13,7 @@
 #include "nodes/BoundedConstantNode.h"
 #include "nodes/BoundedReshapeNode.h"
 #include "input_parsers/OutputConstraint.h"
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 
 // Forward declarations to avoid circular dependency
 class CROWNAnalysis;
@@ -95,11 +95,11 @@ public:
     bool hasSpecificationMatrix() const;
 
     // UNIFIED ANALYSIS ENTRY METHOD (mirrors auto_LiRPA's compute_bounds)
-    // Configuration is read from LirpaConfiguration static members
+    // Configuration is read from LunaConfiguration static members
     BoundedTensor<torch::Tensor> compute_bounds(
         const BoundedTensor<torch::Tensor>& input_bounds,
         const torch::Tensor* specification_matrix = nullptr,
-        LirpaConfiguration::AnalysisMethod method = LirpaConfiguration::AnalysisMethod::CROWN,
+        LunaConfiguration::AnalysisMethod method = LunaConfiguration::AnalysisMethod::CROWN,
         bool bound_lower = true,
         bool bound_upper = true
     );
@@ -188,7 +188,7 @@ private:
     BoundedTensor<torch::Tensor> _finalAnalysisBounds;             // Final analysis output bounds
     bool _hasFinalAnalysisBounds;                  // Whether final bounds are set
 
-    // Configuration is accessed via LirpaConfiguration static members
+    // Configuration is accessed via LunaConfiguration static members
     
     // error checking
     void validateNodeIndex(unsigned nodeIndex) const;

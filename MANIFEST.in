@@ -1,8 +1,8 @@
-include lirpapy/README.md
-include lirpapy/requirements.txt
-include lirpapy/*.py
-include lirpapy/*.cpp
-include lirpapy/CMakeLists.txt
+include lunapy/README.md
+include lunapy/requirements.txt
+include lunapy/*.py
+include lunapy/*.cpp
+include lunapy/CMakeLists.txt
 recursive-include src *.h *.cpp
 recursive-include tools *
 include CMakeLists.txt

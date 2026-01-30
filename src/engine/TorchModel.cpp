@@ -1,8 +1,8 @@
 #include "TorchModel.h"
 #include "CROWNAnalysis.h"
 #include "AlphaCROWNAnalysis.h"
-#include "LirpaError.h"
-#include "LirpaConfiguration.h"
+#include "LunaError.h"
+#include "LunaConfiguration.h"
 #include "OnnxToTorch.h"
 #include "VnnLibInputParser.h"
 #include "OutputConstraint.h"
@@ -21,7 +21,7 @@ TorchModel::TorchModel(const Vector<std::shared_ptr<BoundedTorchNode>>& nodes,
     : _nodes(nodes), _inputIndices(inputIndices),
       _outputIndex(outputIndex), _dependencies(dependencies), _input_size(0), _output_size(0),
       _hasSpecificationMatrix(false), _hasORBranches(false), _hasFinalAnalysisBounds(false),
-      _device(LirpaConfiguration::getDevice()) {
+      _device(LunaConfiguration::getDevice()) {
     
     log(Stringf("[TorchModel] Constructor called with %u nodes", nodes.size()));
     
@@ -52,14 +52,14 @@ TorchModel::TorchModel(const Vector<std::shared_ptr<BoundedTorchNode>>& nodes,
 
 // Constructor that loads from ONNX file (mirrors auto_LiRPA BoundedModule)
 TorchModel::TorchModel(const String& onnxPath)
-    : _device(LirpaConfiguration::getDevice()) {
+    : _device(LunaConfiguration::getDevice()) {
     log(Stringf("[TorchModel] Constructor called with ONNX path: %s", onnxPath.ascii()));
 
     // Use OnnxToTorchParser to parse the ONNX file
     std::shared_ptr<TorchModel> parsedModel = OnnxToTorchParser::parse(onnxPath);
 
     if (!parsedModel) {
-        throw LirpaError(LirpaError::ONNX_PARSING_ERROR,
+        throw LunaError(LunaError::ONNX_PARSING_ERROR,
                           Stringf("Failed to parse ONNX file: %s", onnxPath.ascii()).ascii());
     }
 
@@ -73,10 +73,10 @@ TorchModel::TorchModel(const String& onnxPath)
     _hasSpecificationMatrix = false;
     _hasORBranches = false;
     _hasFinalAnalysisBounds = false;
-    _device = LirpaConfiguration::getDevice();
+    _device = LunaConfiguration::getDevice();
 
     // Initialize analysis configuration with defaults
-    // Configuration is now accessed via LirpaConfiguration static members
+    // Configuration is now accessed via LunaConfiguration static members
 
     // Ensure all nodes are on the configured device
     moveToDevice(_device);
@@ -90,7 +90,7 @@ TorchModel::TorchModel(const String& onnxPath)
 // Constructor that loads from ONNX file and VNN-LIB file for input bounds
 TorchModel::TorchModel(const String& onnxPath,
                        const String& vnnlibPath)
-    : _device(LirpaConfiguration::getDevice()) {
+    : _device(LunaConfiguration::getDevice()) {
     log(Stringf("[TorchModel] Constructor called with ONNX path: %s and VNN-LIB path: %s",
                 onnxPath.ascii(), vnnlibPath.ascii()));
 
@@ -98,7 +98,7 @@ TorchModel::TorchModel(const String& onnxPath,
     std::shared_ptr<TorchModel> parsedModel = OnnxToTorchParser::parse(onnxPath);
 
     if (!parsedModel) {
-        throw LirpaError(LirpaError::ONNX_PARSING_ERROR,
+        throw LunaError(LunaError::ONNX_PARSING_ERROR,
                           Stringf("Failed to parse ONNX file: %s", onnxPath.ascii()).ascii());
     }
 
@@ -112,10 +112,10 @@ TorchModel::TorchModel(const String& onnxPath,
     _hasSpecificationMatrix = false;
     _hasORBranches = false;
     _hasFinalAnalysisBounds = false;
-    _device = LirpaConfiguration::getDevice();
+    _device = LunaConfiguration::getDevice();
 
     // Initialize analysis configuration with defaults
-    // Configuration is now accessed via LirpaConfiguration static members
+    // Configuration is now accessed via LunaConfiguration static members
 
     // Ensure all nodes are on the configured device
     moveToDevice(_device);
@@ -153,7 +153,7 @@ TorchModel::TorchModel(const String& onnxPath,
                 torch::Tensor C = cMatrixResult.C;
 
                 // DEBUG: Print specification matrix details
-                if (LirpaConfiguration::VERBOSE) {
+                if (LunaConfiguration::VERBOSE) {
                     printf("[DEBUG TorchModel] Specification matrix created:\n");
                     printf("  Shape: [%lld, %lld, %lld]\n", 
                            (long long)C.size(0), (long long)C.size(1), (long long)C.size(2));
@@ -203,11 +203,11 @@ TorchModel::TorchModel(const String& onnxPath,
             log(Stringf("[TorchModel] Could not parse output constraints: %s (continuing without them)", 
                         e.what()));
         }
-    } catch (const LirpaError& e) {
-        // Re-throw LirpaError as-is
+    } catch (const LunaError& e) {
+        // Re-throw LunaError as-is
         throw;
     } catch (const std::exception& e) {
-        throw LirpaError(LirpaError::ONNX_PARSING_ERROR,
+        throw LunaError(LunaError::ONNX_PARSING_ERROR,
                           Stringf("Failed to parse VNN-LIB file %s: %s",
                                   vnnlibPath.ascii(), e.what()).ascii());
     }
@@ -219,7 +219,7 @@ TorchModel::TorchModel(const String& onnxPath,
 
 void TorchModel::log(const String& message) const {
     (void)message;
-    if (LirpaConfiguration::NETWORK_LEVEL_REASONER_LOGGING) {
+    if (LunaConfiguration::NETWORK_LEVEL_REASONER_LOGGING) {
         //printf("TorchModel: %s\n", message.ascii());
     }
 }
@@ -463,7 +463,7 @@ torch::Tensor TorchModel::forward(unsigned nodeIndex, Map<unsigned, torch::Tenso
 
     if ( nodeIndex >= _nodes.size() ) 
     {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, (String("Node index not found: ") + std::to_string(nodeIndex)).ascii());
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, (String("Node index not found: ") + std::to_string(nodeIndex)).ascii());
     }
 
     auto& node = _nodes[nodeIndex];
@@ -478,7 +478,7 @@ torch::Tensor TorchModel::forward(unsigned nodeIndex, Map<unsigned, torch::Tenso
         unsigned inputIndex = nodeIndex; // Assuming input indices match node indices
         if ( !inputs.exists(inputIndex) ) 
         {
-            throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, (String("Input index not found: ") + std::to_string(inputIndex)).ascii());
+            throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, (String("Input index not found: ") + std::to_string(inputIndex)).ascii());
         }
         activations[nodeIndex] = inputs[inputIndex];
         return inputs[inputIndex];
@@ -508,7 +508,7 @@ torch::Tensor TorchModel::forward(unsigned nodeIndex, Map<unsigned, torch::Tenso
             // Module nodes need to compute their inputs first
             if ( !_dependencies.exists(nodeIndex) ) 
             {
-                throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, (String("No dependencies found for node at index: ") + std::to_string(nodeIndex)).ascii());
+                throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, (String("No dependencies found for node at index: ") + std::to_string(nodeIndex)).ascii());
             }
             
             Vector<unsigned> deps = _dependencies[nodeIndex];
@@ -522,7 +522,7 @@ torch::Tensor TorchModel::forward(unsigned nodeIndex, Map<unsigned, torch::Tenso
 
             if ( inputTensors.empty() ) 
             {
-                throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, (String("No input tensors for node at index: ") + std::to_string(nodeIndex)).ascii());
+                throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, (String("No input tensors for node at index: ") + std::to_string(nodeIndex)).ascii());
             }
 
             torch::Tensor result;
@@ -541,7 +541,7 @@ torch::Tensor TorchModel::forward(unsigned nodeIndex, Map<unsigned, torch::Tenso
     }
     
     // This should never be reached
-    throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, (String("Unknown node type for node index: ") + std::to_string(nodeIndex)).ascii());
+    throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, (String("Unknown node type for node index: ") + std::to_string(nodeIndex)).ascii());
 }
 
 /*
@@ -647,7 +647,7 @@ BoundedTensor<torch::Tensor> TorchModel::getConcreteBounds(unsigned nodeIndex) c
     validateNodeIndex(nodeIndex);
     
     if (!hasConcreteBounds(nodeIndex)) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, 
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, 
                           Stringf("Concrete bounds not computed for node %u", nodeIndex).ascii());
     }
     
@@ -663,7 +663,7 @@ bool TorchModel::hasConcreteBounds(unsigned nodeIndex) const {
 
 BoundedTensor<torch::Tensor> TorchModel::getInputBounds() const {
     if (!hasInputBounds()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No input bounds set");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No input bounds set");
     }
     return _inputBounds;
 }
@@ -674,14 +674,14 @@ bool TorchModel::hasInputBounds() const {
 
 torch::Tensor TorchModel::getInputLowerBounds() const {
     if (!hasInputBounds()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No input bounds set");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No input bounds set");
     }
     return _inputBounds.lower();
 }
 
 torch::Tensor TorchModel::getInputUpperBounds() const {
     if (!hasInputBounds()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No input bounds set");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No input bounds set");
     }
     return _inputBounds.upper();
 }
@@ -704,7 +704,7 @@ void TorchModel::setSpecificationFromConstraints(const OutputConstraintSet& cons
     log("[TorchModel] Setting specification from OutputConstraintSet");
     
     if (!constraints.hasConstraints()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "OutputConstraintSet is empty");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "OutputConstraintSet is empty");
     }
     
     CMatrixResult result = constraints.toCMatrix();
@@ -722,21 +722,21 @@ void TorchModel::setSpecificationFromConstraints(const OutputConstraintSet& cons
 
 torch::Tensor TorchModel::getSpecificationMatrix() const {
     if (!_hasSpecificationMatrix) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No specification matrix set");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No specification matrix set");
     }
     return _specificationMatrix;
 }
 
 torch::Tensor TorchModel::getSpecificationThresholds() const {
     if (!_hasSpecificationMatrix) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No specification matrix set");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No specification matrix set");
     }
     return _specificationThresholds;
 }
 
 CMatrixResult TorchModel::getSpecificationMatrixResult() const {
     if (!_hasSpecificationMatrix) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No specification matrix set");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No specification matrix set");
     }
     CMatrixResult result;
     result.C = _specificationMatrix;
@@ -751,7 +751,7 @@ bool TorchModel::hasSpecificationMatrix() const {
     return _hasSpecificationMatrix;
 }
 
-// Configuration is now accessed via LirpaConfiguration static members
+// Configuration is now accessed via LunaConfiguration static members
 // Removed setAnalysisConfig, getAnalysisConfig, setAnalysisMethod, setVerbose methods
 
 // UNIFIED ANALYSIS ENTRY METHOD
@@ -759,7 +759,7 @@ bool TorchModel::hasSpecificationMatrix() const {
 BoundedTensor<torch::Tensor> TorchModel::compute_bounds(
     const BoundedTensor<torch::Tensor>& input_bounds,
     const torch::Tensor* specification_matrix,
-    LirpaConfiguration::AnalysisMethod method,
+    LunaConfiguration::AnalysisMethod method,
     bool bound_lower,
     bool bound_upper) {
 
@@ -775,30 +775,30 @@ BoundedTensor<torch::Tensor> TorchModel::compute_bounds(
     }
     // If no specification matrix provided but one is already set in TorchModel, it will be used by CROWN analysis
 
-    // Update LirpaConfiguration with method and bound flags
-    LirpaConfiguration::ANALYSIS_METHOD = method;
-    LirpaConfiguration::COMPUTE_LOWER = bound_lower;
-    LirpaConfiguration::COMPUTE_UPPER = bound_upper;
+    // Update LunaConfiguration with method and bound flags
+    LunaConfiguration::ANALYSIS_METHOD = method;
+    LunaConfiguration::COMPUTE_LOWER = bound_lower;
+    LunaConfiguration::COMPUTE_UPPER = bound_upper;
 
     // Dispatch to appropriate analysis method based on configuration
     BoundedTensor<torch::Tensor> result;
 
-    if (method == LirpaConfiguration::AnalysisMethod::CROWN) {
+    if (method == LunaConfiguration::AnalysisMethod::CROWN) {
         log("[TorchModel] Running CROWN analysis via compute_bounds");
         result = runCROWN(input_bounds);
-    } else if (method == LirpaConfiguration::AnalysisMethod::AlphaCROWN) {
+    } else if (method == LunaConfiguration::AnalysisMethod::AlphaCROWN) {
         log("[TorchModel] Running AlphaCROWN analysis via compute_bounds");
 
         // Configure AlphaCROWN optimization flags
-        bool optimizeLower = bound_lower && LirpaConfiguration::OPTIMIZE_LOWER;
-        bool optimizeUpper = bound_upper && LirpaConfiguration::OPTIMIZE_UPPER;
+        bool optimizeLower = bound_lower && LunaConfiguration::OPTIMIZE_LOWER;
+        bool optimizeUpper = bound_upper && LunaConfiguration::OPTIMIZE_UPPER;
 
         log(Stringf("[TorchModel] AlphaCROWN config: optimize_lower=%s, optimize_upper=%s",
                     optimizeLower ? "true" : "false", optimizeUpper ? "true" : "false"));
 
         result = runAlphaCROWN(input_bounds, optimizeLower, optimizeUpper);
     } else {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "Unknown analysis method");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "Unknown analysis method");
     }
 
     log("[TorchModel] compute_bounds() completed successfully");
@@ -809,7 +809,7 @@ BoundedTensor<torch::Tensor> TorchModel::compute_bounds(
 
 BoundedTensor<torch::Tensor> TorchModel::runCROWN() {
     if (!hasInputBounds()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "Input bounds must be set before running CROWN analysis");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "Input bounds must be set before running CROWN analysis");
     }
     return runCROWN(_inputBounds);
 }
@@ -875,7 +875,7 @@ void TorchModel::cacheForwardShapesFromCenter() {
 // NEW REFACTORED ALPHA-CROWN IMPLEMENTATION - Pure delegator pattern
 BoundedTensor<torch::Tensor> TorchModel::runAlphaCROWN(bool optimizeLower, bool optimizeUpper) {
     if (!hasInputBounds()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "Input bounds must be set before running AlphaCROWN analysis");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "Input bounds must be set before running AlphaCROWN analysis");
     }
     return runAlphaCROWN(_inputBounds, optimizeLower, optimizeUpper);
 }
@@ -896,14 +896,14 @@ BoundedTensor<torch::Tensor> TorchModel::runAlphaCROWN(const BoundedTensor<torch
     // Call AlphaCROWN to compute optimized upper bounds (if requested)
     if (optimizeUpper) {
         log("[TorchModel] Requesting optimized upper bounds from AlphaCROWNAnalysis");
-        finalUpper = alphaCrownAnalysis->computeOptimizedBounds(LirpaConfiguration::BoundSide::Upper);
+        finalUpper = alphaCrownAnalysis->computeOptimizedBounds(LunaConfiguration::BoundSide::Upper);
         log("[TorchModel] Received optimized upper bounds");
     }
 
     // Call AlphaCROWN to compute optimized lower bounds (if requested)
     if (optimizeLower) {
         log("[TorchModel] Requesting optimized lower bounds from AlphaCROWNAnalysis");
-        finalLower = alphaCrownAnalysis->computeOptimizedBounds(LirpaConfiguration::BoundSide::Lower);
+        finalLower = alphaCrownAnalysis->computeOptimizedBounds(LunaConfiguration::BoundSide::Lower);
         log("[TorchModel] Received optimized lower bounds");
     }
 
@@ -952,7 +952,7 @@ void TorchModel::setAlphaCROWNBounds(unsigned nodeIndex, const BoundedTensor<tor
 BoundedTensor<torch::Tensor> TorchModel::getCROWNBounds(unsigned nodeIndex) const {
     validateNodeIndex(nodeIndex);
     if (!_crownBounds.exists(nodeIndex)) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE,
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE,
                           Stringf("No CROWN bounds available for node %u", nodeIndex).ascii());
     }
     return _crownBounds.at(nodeIndex);
@@ -961,7 +961,7 @@ BoundedTensor<torch::Tensor> TorchModel::getCROWNBounds(unsigned nodeIndex) cons
 BoundedTensor<torch::Tensor> TorchModel::getAlphaCROWNBounds(unsigned nodeIndex) const {
     validateNodeIndex(nodeIndex);
     if (!_alphaCrownBounds.exists(nodeIndex)) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE,
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE,
                           Stringf("No AlphaCROWN bounds available for node %u", nodeIndex).ascii());
     }
     return _alphaCrownBounds.at(nodeIndex);
@@ -985,7 +985,7 @@ void TorchModel::setFinalAnalysisBounds(const BoundedTensor<torch::Tensor>& boun
 
 BoundedTensor<torch::Tensor> TorchModel::getFinalAnalysisBounds() const {
     if (!_hasFinalAnalysisBounds) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE, "No final analysis bounds available");
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE, "No final analysis bounds available");
     }
     return _finalAnalysisBounds;
 }
@@ -996,7 +996,7 @@ bool TorchModel::hasFinalAnalysisBounds() const {
  
 void TorchModel::validateNodeIndex(unsigned nodeIndex) const {
     if (nodeIndex >= _nodes.size()) {
-        throw LirpaError(LirpaError::INVALID_MODEL_STRUCTURE,
+        throw LunaError(LunaError::INVALID_MODEL_STRUCTURE,
                           Stringf("Node index %u out of bounds for model with %u nodes", nodeIndex, _nodes.size()).ascii());
     }
 }

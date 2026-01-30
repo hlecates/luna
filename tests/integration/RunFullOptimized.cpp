@@ -1,7 +1,7 @@
 #include "src/input_parsers/OnnxToTorch.h"
 #include "src/engine/TorchModel.h"
 #include "src/engine/AlphaCROWNAnalysis.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "src/common/CommonError.h"
 #include <torch/torch.h>
 #include <iostream>
@@ -60,7 +60,7 @@ static void printBounds(const torch::Tensor& lower, const torch::Tensor& upper, 
 
 int main(int argc, char* argv[]) {
     // Parse command-line arguments
-    LirpaConfiguration::parseArgs(argc, argv);
+    LunaConfiguration::parseArgs(argc, argv);
 
     try {
         // OPTIMIZATION 1: Use optimal thread count instead of 1
@@ -218,7 +218,7 @@ int main(int argc, char* argv[]) {
             crownResult = torchModel->compute_bounds(
                 inputBounds,
                 nullptr,
-                LirpaConfiguration::AnalysisMethod::CROWN,
+                LunaConfiguration::AnalysisMethod::CROWN,
                 true, true
             );
         }

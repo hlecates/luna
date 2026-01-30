@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Diagnostic script to identify instances with largest bound width discrepancies
-between lirpa and abcrown.
+between luna and abcrown.
 """
 
 import csv
@@ -51,23 +51,23 @@ def compute_bound_width_from_bounds(lower_str, upper_str):
     widths = [u - l for l, u in zip(lower_bounds, upper_bounds)]
     return sum(widths) / len(widths)
 
-def analyze_discrepancies(lirpa_file, abcrown_file):
-    """Analyze bound width discrepancies between lirpa and abcrown."""
+def analyze_discrepancies(luna_file, abcrown_file):
+    """Analyze bound width discrepancies between luna and abcrown."""
     
     # Load data
-    print(f"Loading {lirpa_file}...")
-    lirpa_records = load_csv(lirpa_file)
-    print(f"Loaded {len(lirpa_records)} lirpa records")
+    print(f"Loading {luna_file}...")
+    luna_records = load_csv(luna_file)
+    print(f"Loaded {len(luna_records)} luna records")
     
     print(f"Loading {abcrown_file}...")
     abcrown_records = load_csv(abcrown_file)
     print(f"Loaded {len(abcrown_records)} abcrown records")
     
     # Create lookup by (benchmark, slurm_id)
-    lirpa_dict = {}
-    for r in lirpa_records:
+    luna_dict = {}
+    for r in luna_records:
         key = (r['benchmark'], r['slurm_id'])
-        lirpa_dict[key] = r
+        luna_dict[key] = r
     
     abcrown_dict = {}
     for r in abcrown_records:
@@ -76,37 +76,37 @@ def analyze_discrepancies(lirpa_file, abcrown_file):
     
     # Find matching instances
     discrepancies = []
-    for key in lirpa_dict:
+    for key in luna_dict:
         if key not in abcrown_dict:
             continue
         
-        lirpa_rec = lirpa_dict[key]
+        luna_rec = luna_dict[key]
         abcrown_rec = abcrown_dict[key]
         
         # Skip if either has missing bound_width
-        if lirpa_rec['bound_width'] == '--' or abcrown_rec['bound_width'] == '--':
+        if luna_rec['bound_width'] == '--' or abcrown_rec['bound_width'] == '--':
             continue
         
         try:
-            lirpa_width = float(lirpa_rec['bound_width'])
+            luna_width = float(luna_rec['bound_width'])
             abcrown_width = float(abcrown_rec['bound_width'])
             
-            # Compute ratio (lirpa / abcrown)
+            # Compute ratio (luna / abcrown)
             if abcrown_width > 0:
-                ratio = lirpa_width / abcrown_width
-            elif lirpa_width > 0:
+                ratio = luna_width / abcrown_width
+            elif luna_width > 0:
                 ratio = float('inf')
             else:
                 ratio = 1.0
             
             # Compute absolute difference
-            diff = lirpa_width - abcrown_width
+            diff = luna_width - abcrown_width
             
             # Also compute from bounds if available
-            lirpa_width_from_bounds = None
-            if lirpa_rec.get('lower_bounds') and lirpa_rec.get('upper_bounds'):
-                lirpa_width_from_bounds = compute_bound_width_from_bounds(
-                    lirpa_rec['lower_bounds'], lirpa_rec['upper_bounds'])
+            luna_width_from_bounds = None
+            if luna_rec.get('lower_bounds') and luna_rec.get('upper_bounds'):
+                luna_width_from_bounds = compute_bound_width_from_bounds(
+                    luna_rec['lower_bounds'], luna_rec['upper_bounds'])
             
             abcrown_width_from_bounds = None
             if abcrown_rec.get('lower_bounds') and abcrown_rec.get('upper_bounds'):
@@ -116,14 +116,14 @@ def analyze_discrepancies(lirpa_file, abcrown_file):
             discrepancies.append({
                 'benchmark': key[0],
                 'slurm_id': key[1],
-                'lirpa_width': lirpa_width,
+                'luna_width': luna_width,
                 'abcrown_width': abcrown_width,
                 'ratio': ratio,
                 'diff': diff,
-                'lirpa_width_from_bounds': lirpa_width_from_bounds,
+                'luna_width_from_bounds': luna_width_from_bounds,
                 'abcrown_width_from_bounds': abcrown_width_from_bounds,
-                'lirpa_lower': lirpa_rec.get('lower_bounds', ''),
-                'lirpa_upper': lirpa_rec.get('upper_bounds', ''),
+                'luna_lower': luna_rec.get('lower_bounds', ''),
+                'luna_upper': luna_rec.get('upper_bounds', ''),
                 'abcrown_lower': abcrown_rec.get('lower_bounds', ''),
                 'abcrown_upper': abcrown_rec.get('upper_bounds', ''),
             })
@@ -147,13 +147,13 @@ def print_summary(discrepancies):
     sorted_by_ratio = sorted(discrepancies, key=lambda x: x['ratio'] if x['ratio'] != float('inf') else 1e10, reverse=True)
     
     print(f"\nTotal matching instances: {len(discrepancies)}")
-    print(f"\nWorst 10 instances by ratio (lirpa/abcrown):")
-    print(f"{'Benchmark':<25} {'ID':<6} {'LIRPA':<15} {'ABCROWN':<15} {'Ratio':<10} {'Diff':<15}")
+    print(f"\nWorst 10 instances by ratio (luna/abcrown):")
+    print(f"{'Benchmark':<25} {'ID':<6} {'LUNA':<15} {'ABCROWN':<15} {'Ratio':<10} {'Diff':<15}")
     print("-" * 90)
     
     for d in sorted_by_ratio[:10]:
         ratio_str = f"{d['ratio']:.2f}" if d['ratio'] != float('inf') else "inf"
-        print(f"{d['benchmark']:<25} {d['slurm_id']:<6} {d['lirpa_width']:<15.6f} "
+        print(f"{d['benchmark']:<25} {d['slurm_id']:<6} {d['luna_width']:<15.6f} "
               f"{d['abcrown_width']:<15.6f} {ratio_str:<10} {d['diff']:<15.6f}")
     
     # Group by benchmark
@@ -207,18 +207,18 @@ def print_detailed_instances(discrepancies, top_n=20):
     
     for i, d in enumerate(sorted_by_ratio[:top_n], 1):
         print(f"\n{i}. {d['benchmark']} (ID: {d['slurm_id']})")
-        print(f"   LIRPA width:   {d['lirpa_width']:.6f}")
+        print(f"   LUNA width:   {d['luna_width']:.6f}")
         print(f"   ABCROWN width: {d['abcrown_width']:.6f}")
         ratio_str = f"{d['ratio']:.2f}x" if d['ratio'] != float('inf') else "inf"
-        print(f"   Ratio:          {ratio_str} (LIRPA is {ratio_str} wider)")
+        print(f"   Ratio:          {ratio_str} (LUNA is {ratio_str} wider)")
         print(f"   Difference:    {d['diff']:.6f}")
         
-        if d['lirpa_width_from_bounds'] is not None:
-            print(f"   LIRPA width (from bounds): {d['lirpa_width_from_bounds']:.6f}")
+        if d['luna_width_from_bounds'] is not None:
+            print(f"   LUNA width (from bounds): {d['luna_width_from_bounds']:.6f}")
         if d['abcrown_width_from_bounds'] is not None:
             print(f"   ABCROWN width (from bounds): {d['abcrown_width_from_bounds']:.6f}")
         
-        print(f"   LIRPA bounds:   lower={d['lirpa_lower']}, upper={d['lirpa_upper']}")
+        print(f"   LUNA bounds:   lower={d['luna_lower']}, upper={d['luna_upper']}")
         print(f"   ABCROWN bounds: lower={d['abcrown_lower']}, upper={d['abcrown_upper']}")
 
 def export_worst_instances(discrepancies, output_file, top_n=50):
@@ -227,8 +227,8 @@ def export_worst_instances(discrepancies, output_file, top_n=50):
     
     with open(output_file, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
-            'benchmark', 'slurm_id', 'lirpa_width', 'abcrown_width', 'ratio', 'diff',
-            'lirpa_lower', 'lirpa_upper', 'abcrown_lower', 'abcrown_upper'
+            'benchmark', 'slurm_id', 'luna_width', 'abcrown_width', 'ratio', 'diff',
+            'luna_lower', 'luna_upper', 'abcrown_lower', 'abcrown_upper'
         ])
         writer.writeheader()
         
@@ -236,12 +236,12 @@ def export_worst_instances(discrepancies, output_file, top_n=50):
             writer.writerow({
                 'benchmark': d['benchmark'],
                 'slurm_id': d['slurm_id'],
-                'lirpa_width': d['lirpa_width'],
+                'luna_width': d['luna_width'],
                 'abcrown_width': d['abcrown_width'],
                 'ratio': d['ratio'] if d['ratio'] != float('inf') else 'inf',
                 'diff': d['diff'],
-                'lirpa_lower': d['lirpa_lower'],
-                'lirpa_upper': d['lirpa_upper'],
+                'luna_lower': d['luna_lower'],
+                'luna_upper': d['luna_upper'],
                 'abcrown_lower': d['abcrown_lower'],
                 'abcrown_upper': d['abcrown_upper'],
             })
@@ -250,15 +250,15 @@ def export_worst_instances(discrepancies, output_file, top_n=50):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python debug_bound_width.py <lirpa_instances.csv> <abcrown_instances.csv> [output.csv]")
+        print("Usage: python debug_bound_width.py <luna_instances.csv> <abcrown_instances.csv> [output.csv]")
         sys.exit(1)
     
-    lirpa_file = Path(sys.argv[1])
+    luna_file = Path(sys.argv[1])
     abcrown_file = Path(sys.argv[2])
     output_file = sys.argv[3] if len(sys.argv) > 3 else None
     
-    if not lirpa_file.exists():
-        print(f"Error: {lirpa_file} not found")
+    if not luna_file.exists():
+        print(f"Error: {luna_file} not found")
         sys.exit(1)
     
     if not abcrown_file.exists():
@@ -266,7 +266,7 @@ def main():
         sys.exit(1)
     
     # Analyze discrepancies
-    discrepancies = analyze_discrepancies(lirpa_file, abcrown_file)
+    discrepancies = analyze_discrepancies(luna_file, abcrown_file)
     
     # Print summary
     print_summary(discrepancies)

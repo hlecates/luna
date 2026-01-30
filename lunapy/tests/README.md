@@ -1,6 +1,6 @@
-# lirpapy Tests
+# lunapy Tests
 
-Comprehensive test suite for the lirpapy Python bindings.
+Comprehensive test suite for the lunapy Python bindings.
 
 ## Test Structure
 
@@ -18,17 +18,17 @@ tests/
 ### Run All Tests
 
 ```bash
-# From lirpapy directory
+# From lunapy directory
 pytest
 
 # Or from repository root
-pytest lirpapy/tests/
+pytest lunapy/tests/
 
 # With verbose output
 pytest -v
 
 # With coverage
-pytest --cov=lirpapy --cov-report=html
+pytest --cov=lunapy --cov-report=html
 ```
 
 ### Run Specific Test Files
@@ -72,7 +72,7 @@ pytest tests/test_install.py -v
 - `TestBoundedTensor`: BoundedTensor creation and manipulation
 - `TestTorchModelBasic`: TorchModel creation and properties
 - `TestInputBounds`: Input bound management
-- `TestConfiguration`: LirpaConfiguration settings
+- `TestConfiguration`: LunaConfiguration settings
 - `TestErrorHandling`: Error cases and exceptions
 
 ### Analysis Tests (`test_analysis.py`)
@@ -118,7 +118,7 @@ Example test structure:
 
 ```python
 import pytest
-from lirpapy import TorchModel
+from lunapy import TorchModel
 
 class TestMyFeature:
     """Tests for my new feature"""
@@ -146,7 +146,7 @@ Tests are designed to work in CI environments:
 - name: Run tests
   run: |
     pip install pytest pytest-cov
-    pytest lirpapy/tests/ -v
+    pytest lunapy/tests/ -v
 ```
 
 ## Test Coverage
@@ -154,7 +154,7 @@ Tests are designed to work in CI environments:
 Generate coverage report:
 
 ```bash
-pytest --cov=lirpapy --cov-report=html --cov-report=term
+pytest --cov=lunapy --cov-report=html --cov-report=term
 ```
 
 View HTML report:
@@ -189,7 +189,7 @@ With all resources available:
 
 ## Troubleshooting
 
-**Import errors**: Ensure lirpapy is installed
+**Import errors**: Ensure lunapy is installed
 ```bash
 pip install -e .
 ```

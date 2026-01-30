@@ -2,7 +2,7 @@
 # Analysis unit tests
 
 function(add_analysis_test TEST_NAME)
-    lirpa_add_test(${TEST_NAME} ${TEST_NAME}.cpp "analysis" "unit")
+    luna_add_test(${TEST_NAME} ${TEST_NAME}.cpp "analysis" "unit")
 endfunction()
 
 add_analysis_test(test_crown_analysis)

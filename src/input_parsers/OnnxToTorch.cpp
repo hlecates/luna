@@ -34,7 +34,7 @@
 #include "../engine/nodes/BoundedConvTransposeNode.h"
 #include "../engine/nodes/BoundedConcatNode.h"
 #include "../engine/nodes/BoundedSliceNode.h"
-#include "../engine/LirpaError.h"
+#include "../engine/LunaError.h"
 #include "File.h"
 #include "MString.h"
 #include "Vector.h"
@@ -59,14 +59,14 @@ void onnxToTorchMissingAttributeError(const onnx::NodeProto &node, const String 
     String errorMessage = Stringf("OnnxToTorch: Onnx node of type %s is missing the expected attribute %s",
                                    node.op_type().c_str(),
                                    attributeName.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchUnimplementedOperationError(const onnx::NodeProto &node)
 {
     String errorMessage = Stringf("OnnxToTorch: Onnx '%s' operation not yet implemented for TorchModel conversion. Should be relatively easy to add.",
                                    node.op_type().c_str());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchUnimplementedAttributeError(const onnx::NodeProto &node, const String &attributeName)
@@ -74,21 +74,21 @@ void onnxToTorchUnimplementedAttributeError(const onnx::NodeProto &node, const S
     String errorMessage = Stringf("OnnxToTorch: Onnx '%s' operation with non-default value for attribute '%s' not yet supported.",
                                    node.op_type().c_str(),
                                    attributeName.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchUnsupportedOperationError(const onnx::NodeProto &node)
 {
     String errorMessage = Stringf("OnnxToTorch: Onnx operation %s not currently supported by TorchModel conversion",
                                    node.op_type().c_str());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchMissingNodeError(const String &missingNodeName)
 {
     String errorMessage = Stringf("OnnxToTorch: Internal invariant violated: missing node '%s' not found",
                                    missingNodeName.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchUnexpectedNumberOfInputs(const onnx::NodeProto &node,
@@ -112,7 +112,7 @@ void onnxToTorchUnexpectedNumberOfInputs(const onnx::NodeProto &node,
                                 upperBound,
                                 actualNumberOfInputs);
     }
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchInvalidTensorShapeError(const String &nodeName, const String &reason)
@@ -120,14 +120,14 @@ void onnxToTorchInvalidTensorShapeError(const String &nodeName, const String &re
     String errorMessage = Stringf("OnnxToTorch: Invalid tensor shape for node '%s': %s",
                                    nodeName.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchUnsupportedDataTypeError(const onnx::TensorProto_DataType &dataType)
 {
     String errorMessage = Stringf("OnnxToTorch: Support for Onnx constants of type '%s' not yet implemented.",
                                    TensorProto_DataType_Name(dataType).c_str());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchInvalidConstantNodeError(const onnx::NodeProto &node, const String &reason)
@@ -135,14 +135,14 @@ void onnxToTorchInvalidConstantNodeError(const onnx::NodeProto &node, const Stri
     String errorMessage = Stringf("OnnxToTorch: Invalid Constant node '%s': %s",
                                    node.name().c_str(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchTopologicalSortError(const String &reason)
 {
     String errorMessage = Stringf("OnnxToTorch: Topological sort failed: %s",
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchBoundedModuleCreationError(const String &operationType, const String &reason)
@@ -150,7 +150,7 @@ void onnxToTorchBoundedModuleCreationError(const String &operationType, const St
     String errorMessage = Stringf("OnnxToTorch: Failed to create bounded module for operation '%s': %s",
                                    operationType.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchFileReadError(const String &filename, const String &reason)
@@ -158,7 +158,7 @@ void onnxToTorchFileReadError(const String &filename, const String &reason)
     String errorMessage = Stringf("OnnxToTorch: Failed to read file '%s': %s",
                                    filename.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchModelParseError(const String &filename, const String &reason)
@@ -166,14 +166,14 @@ void onnxToTorchModelParseError(const String &filename, const String &reason)
     String errorMessage = Stringf("OnnxToTorch: Failed to parse ONNX model from file '%s': %s",
                                    filename.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchGraphProcessingError(const String &reason)
 {
     String errorMessage = Stringf("OnnxToTorch: Graph processing failed: %s",
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchTensorConversionError(const String &tensorName, const String &reason)
@@ -181,7 +181,7 @@ void onnxToTorchTensorConversionError(const String &tensorName, const String &re
     String errorMessage = Stringf("OnnxToTorch: Failed to convert tensor '%s': %s",
                                    tensorName.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchAttributeProcessingError(const onnx::NodeProto &node, const String &attributeName, const String &reason)
@@ -190,7 +190,7 @@ void onnxToTorchAttributeProcessingError(const onnx::NodeProto &node, const Stri
                                    attributeName.ascii(),
                                    node.op_type().c_str(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchShapeMismatchError(const String &operation, const TensorShape &expectedShape, const TensorShape &actualShape)
@@ -213,7 +213,7 @@ void onnxToTorchShapeMismatchError(const String &operation, const TensorShape &e
                                    operation.ascii(),
                                    expectedStr.ascii(),
                                    actualStr.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchDimensionMismatchError(const String &operation, unsigned int expectedDim, unsigned int actualDim)
@@ -222,7 +222,7 @@ void onnxToTorchDimensionMismatchError(const String &operation, unsigned int exp
                                    operation.ascii(),
                                    expectedDim,
                                    actualDim);
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchInvalidBroadcastError(const String &operation, const TensorShape &shape1, const TensorShape &shape2)
@@ -245,14 +245,14 @@ void onnxToTorchInvalidBroadcastError(const String &operation, const TensorShape
                                    operation.ascii(),
                                    shape1Str.ascii(),
                                    shape2Str.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchUnsupportedActivationError(const String &activationType)
 {
     String errorMessage = Stringf("OnnxToTorch: Unsupported activation function '%s'",
                                    activationType.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchInvalidWeightBiasError(const String &operation, const String &reason)
@@ -260,7 +260,7 @@ void onnxToTorchInvalidWeightBiasError(const String &operation, const String &re
     String errorMessage = Stringf("OnnxToTorch: Invalid weight/bias configuration in operation '%s': %s",
                                    operation.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchMemoryAllocationError(const String &operation, const String &reason)
@@ -268,7 +268,7 @@ void onnxToTorchMemoryAllocationError(const String &operation, const String &rea
     String errorMessage = Stringf("OnnxToTorch: Memory allocation failed in operation '%s': %s",
                                    operation.ascii(),
                                    reason.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 void onnxToTorchPyTorchError(const String &operation, const String &pytorchError)
@@ -276,7 +276,7 @@ void onnxToTorchPyTorchError(const String &operation, const String &pytorchError
     String errorMessage = Stringf("OnnxToTorch: PyTorch error in operation '%s': %s",
                                    operation.ascii(),
                                    pytorchError.ascii());
-    throw LirpaError(LirpaError::ONNX_PARSING_ERROR, errorMessage.ascii());
+    throw LunaError(LunaError::ONNX_PARSING_ERROR, errorMessage.ascii());
 }
 
 //Public
@@ -694,8 +694,8 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                     auto constantNode = std::make_shared<NLR::BoundedConstantNode>(constant, tensorName);
                     constantNode->setNodeIndex(i);
                     nodes.append(constantNode);
-                } catch (const LirpaError& e) {
-                    // Re-throw LirpaError exceptions as they are already properly formatted
+                } catch (const LunaError& e) {
+                    // Re-throw LunaError exceptions as they are already properly formatted
                     throw;
                 } catch (const std::exception& e) {
                     // Convert other exceptions to OnnxToTorch specific errors
@@ -914,7 +914,7 @@ std::shared_ptr<NLR::TorchModel> OnnxToTorchParser::processGraph() {
                 boundedNode->setNodeIndex(i);
                 boundedNode->setNodeName(tensorName);
 
-            } catch (const LirpaError& e) {
+            } catch (const LunaError& e) {
                 throw;
             } catch (const std::exception& e) {
                 onnxToTorchBoundedModuleCreationError(node.op_type(), e.what());

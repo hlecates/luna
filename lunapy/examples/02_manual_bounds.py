@@ -8,7 +8,7 @@ This example shows how to:
 - Compute bounds with different methods
 """
 
-from lirpapy import TorchModel
+from lunapy import TorchModel
 import numpy as np
 from pathlib import Path
 

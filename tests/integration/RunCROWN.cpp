@@ -1,6 +1,6 @@
 #include "src/engine/CROWNAnalysis.h"
 #include "src/engine/TorchModel.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "src/engine/nodes/BoundedInputNode.h"
 #include "src/engine/nodes/BoundedLinearNode.h"
 #include "src/engine/nodes/BoundedReLUNode.h"
@@ -256,10 +256,10 @@ int main(int argc, char** argv) {
     std::cout << "==========================================" << std::endl;
 
     // Parse command line arguments for configuration
-    LirpaConfiguration::parseArgs(argc, argv);
+    LunaConfiguration::parseArgs(argc, argv);
     
     // Mode selection: default standard CROWN (layer-by-layer intermediates via CROWN). Pass "--crown-ibp" to use CROWN-IBP.
-    std::cout << "Mode: " << (LirpaConfiguration::USE_STANDARD_CROWN ? "Standard CROWN" : "CROWN-IBP") << std::endl;
+    std::cout << "Mode: " << (LunaConfiguration::USE_STANDARD_CROWN ? "Standard CROWN" : "CROWN-IBP") << std::endl;
 
     try {
         // Step 1: Create DeepPoly model

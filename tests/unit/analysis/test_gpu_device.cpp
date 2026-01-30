@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "src/engine/CROWNAnalysis.h"
 #include "fixtures/model_builders.h"
 #include <torch/torch.h>
@@ -11,12 +11,12 @@ TEST(GPUDeviceTest, CROWNUsesConfiguredCudaDevice) {
         return;
     }
 
-    LirpaConfiguration::USE_CUDA = true;
-    LirpaConfiguration::CUDA_DEVICE_ID = 0;
-    LirpaConfiguration::updateDeviceFromFlags();
+    LunaConfiguration::USE_CUDA = true;
+    LunaConfiguration::CUDA_DEVICE_ID = 0;
+    LunaConfiguration::updateDeviceFromFlags();
 
     auto model = ModelBuilder::createMLP(4, {8}, 2, true, false);
-    auto device = LirpaConfiguration::getDevice();
+    auto device = LunaConfiguration::getDevice();
 
     torch::Tensor lower = torch::zeros({1, 4}, torch::TensorOptions().dtype(torch::kFloat32).device(device));
     torch::Tensor upper = torch::ones({1, 4}, torch::TensorOptions().dtype(torch::kFloat32).device(device));

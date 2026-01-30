@@ -1,7 +1,7 @@
 #include "src/input_parsers/OnnxToTorch.h"
 #include "src/engine/TorchModel.h"
 #include "src/engine/CROWNAnalysis.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include <torch/torch.h>
 #include <iostream>
 #include <iomanip>
@@ -110,7 +110,7 @@ int main(int argc, char* argv[]) {
             BoundedTensor<torch::Tensor> crownResult = torchModel->compute_bounds(
                 inputBounds,
                 nullptr,
-                LirpaConfiguration::AnalysisMethod::CROWN,
+                LunaConfiguration::AnalysisMethod::CROWN,
                 true,
                 true
             );

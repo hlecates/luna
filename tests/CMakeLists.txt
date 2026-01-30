@@ -1,5 +1,5 @@
 # tests/CMakeLists.txt
-# Top-level test configuration for LIRPA testing framework
+# Top-level test configuration for LUNA testing framework
 
 set(TESTS_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(TESTS_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
@@ -35,7 +35,7 @@ add_library(CxxTestRunner STATIC
 target_include_directories(CxxTestRunner PUBLIC ${CXXTEST_INCLUDE_DIR})
 
 # Unified macro for registering tests
-function(lirpa_add_test TEST_NAME TEST_SOURCE TEST_LABEL TEST_TIER)
+function(luna_add_test TEST_NAME TEST_SOURCE TEST_LABEL TEST_TIER)
     set(TEST_SOURCE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_SOURCE})
     get_filename_component(TEST_EXT ${TEST_SOURCE_PATH} EXT)
 
@@ -63,7 +63,7 @@ function(lirpa_add_test TEST_NAME TEST_SOURCE TEST_LABEL TEST_TIER)
 
     target_link_libraries(${TEST_NAME}
         TestFixtures
-        ${LIRPA_LIB}
+        ${LUNA_LIB}
         CxxTestRunner
         ${LIBS}
     )
@@ -81,7 +81,7 @@ function(lirpa_add_test TEST_NAME TEST_SOURCE TEST_LABEL TEST_TIER)
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${TEST_NAME}> ${TEST_DIR}/${TEST_TIER}/
     )
 
-    set_property(GLOBAL APPEND PROPERTY LIRPA_TEST_TARGETS ${TEST_NAME})
+    set_property(GLOBAL APPEND PROPERTY LUNA_TEST_TARGETS ${TEST_NAME})
 endfunction()
 
 if(RUN_UNIT_TEST OR RUN_SYSTEM_TEST OR RUN_REGRESS_TEST)
@@ -114,9 +114,9 @@ if(NOT CTEST_NTHREADS OR CTEST_NTHREADS EQUAL 0)
     set(CTEST_NTHREADS 1)
 endif()
 
-get_property(LIRPA_TEST_TARGETS GLOBAL PROPERTY LIRPA_TEST_TARGETS)
-if(LIRPA_TEST_TARGETS)
-    add_custom_target(build-tests DEPENDS ${LIRPA_TEST_TARGETS})
+get_property(LUNA_TEST_TARGETS GLOBAL PROPERTY LUNA_TEST_TARGETS)
+if(LUNA_TEST_TARGETS)
+    add_custom_target(build-tests DEPENDS ${LUNA_TEST_TARGETS})
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -j${CTEST_NTHREADS} $$ARGS
         DEPENDS build-tests

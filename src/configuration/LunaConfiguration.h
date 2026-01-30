@@ -1,11 +1,11 @@
-#ifndef __LirpaConfiguration_h__
-#define __LirpaConfiguration_h__
+#ifndef __LunaConfiguration_h__
+#define __LunaConfiguration_h__
 
 #include "MString.h"
 #include "ConfigurationError.h"
 #include <torch/torch.h>
 
-class LirpaConfiguration
+class LunaConfiguration
 {
 public:
     // Enums
@@ -77,4 +77,4 @@ public:
     static BoundSide stringToBoundSide(const String& str);
 };
 
-#endif // __LirpaConfiguration_h__
+#endif // __LunaConfiguration_h__

@@ -4,7 +4,7 @@ Tests for CROWN and Alpha-CROWN analysis
 
 import pytest
 import numpy as np
-from lirpapy import TorchModel, LirpaConfiguration
+from lunapy import TorchModel, LunaConfiguration
 
 
 class TestCROWNAnalysis:
@@ -76,7 +76,7 @@ class TestAlphaCROWNAnalysis:
         model = TorchModel(spec_test_onnx, spec_test_vnnlib)
         
         # Use fewer iterations for faster testing
-        LirpaConfiguration.ALPHA_ITERATIONS = 10
+        LunaConfiguration.ALPHA_ITERATIONS = 10
         
         result = model.compute_bounds(method='alpha-CROWN')
         
@@ -94,7 +94,7 @@ class TestAlphaCROWNAnalysis:
         crown_upper = crown_result.upper()
         
         # Alpha-CROWN bounds (with few iterations)
-        LirpaConfiguration.ALPHA_ITERATIONS = 10
+        LunaConfiguration.ALPHA_ITERATIONS = 10
         alpha_result = model.compute_bounds(method='alpha-CROWN')
         alpha_lower = alpha_result.lower()
         alpha_upper = alpha_result.upper()
@@ -111,10 +111,10 @@ class TestAlphaCROWNAnalysis:
         model = TorchModel(spec_test_onnx, spec_test_vnnlib)
         
         # Set custom configuration
-        LirpaConfiguration.ALPHA_ITERATIONS = 5
-        LirpaConfiguration.ALPHA_LR = 0.1
-        LirpaConfiguration.OPTIMIZE_LOWER = True
-        LirpaConfiguration.OPTIMIZE_UPPER = False
+        LunaConfiguration.ALPHA_ITERATIONS = 5
+        LunaConfiguration.ALPHA_LR = 0.1
+        LunaConfiguration.OPTIMIZE_LOWER = True
+        LunaConfiguration.OPTIMIZE_UPPER = False
         
         result = model.compute_bounds(method='alpha-CROWN')
         
@@ -124,7 +124,7 @@ class TestAlphaCROWNAnalysis:
         """Test calling runAlphaCROWN directly"""
         model = TorchModel(spec_test_onnx, spec_test_vnnlib)
         
-        LirpaConfiguration.ALPHA_ITERATIONS = 5
+        LunaConfiguration.ALPHA_ITERATIONS = 5
         result = model.runAlphaCROWN(optimizeLower=True, optimizeUpper=False)
         
         assert result is not None

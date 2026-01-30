@@ -1,34 +1,34 @@
 #ifndef __TensorUtils_h__
 #define __TensorUtils_h__
 
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 #include <torch/torch.h>
 
 namespace LirpaTensorUtils {
 
 inline torch::TensorOptions defaultOptions()
 {
-    return torch::TensorOptions().dtype(torch::kFloat32).device(LirpaConfiguration::getDevice());
+    return torch::TensorOptions().dtype(torch::kFloat32).device(LunaConfiguration::getDevice());
 }
 
 inline torch::Tensor toDevice(const torch::Tensor &tensor)
 {
-    return tensor.to(LirpaConfiguration::getDevice());
+    return tensor.to(LunaConfiguration::getDevice());
 }
 
 inline torch::Tensor zerosLikeOnDevice(const torch::Tensor &reference)
 {
-    return torch::zeros_like(reference, reference.options().device(LirpaConfiguration::getDevice()));
+    return torch::zeros_like(reference, reference.options().device(LunaConfiguration::getDevice()));
 }
 
 inline torch::Tensor onesLikeOnDevice(const torch::Tensor &reference)
 {
-    return torch::ones_like(reference, reference.options().device(LirpaConfiguration::getDevice()));
+    return torch::ones_like(reference, reference.options().device(LunaConfiguration::getDevice()));
 }
 
 inline torch::Tensor emptyLikeOnDevice(const torch::Tensor &reference)
 {
-    return torch::empty_like(reference, reference.options().device(LirpaConfiguration::getDevice()));
+    return torch::empty_like(reference, reference.options().device(LunaConfiguration::getDevice()));
 }
 
 } // namespace LirpaTensorUtils

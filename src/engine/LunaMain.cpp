@@ -1,8 +1,8 @@
-#include "LirpaMain.h"
+#include "LunaMain.h"
 #include "input_parsers/OnnxToTorch.h"
 #include "TorchModel.h"
-#include "LirpaError.h"
-#include "configuration/LirpaConfiguration.h"
+#include "LunaError.h"
+#include "configuration/LunaConfiguration.h"
 #include "input_parsers/OutputConstraint.h"
 #include "input_parsers/VnnLibInputParser.h"
 #include <torch/torch.h>
@@ -145,7 +145,7 @@ void printUsage(const char* programName) {
     std::cout << "  --help, -h                      Print this help message" << std::endl;
 }
 
-int lirpaMain(int argc, char* argv[]) {
+int lunaMain(int argc, char* argv[]) {
     // Check for help flag
     if (argc > 1) {
         std::string firstArg = argv[1];
@@ -171,22 +171,22 @@ int lirpaMain(int argc, char* argv[]) {
 
     if (useFlags) {
         // Parse flag-based arguments first
-        LirpaConfiguration::parseArgs(argc, argv);
+        LunaConfiguration::parseArgs(argc, argv);
         
         // Get file paths from configuration
-        if (LirpaConfiguration::INPUT_FILE_PATH.length() == 0) {
+        if (LunaConfiguration::INPUT_FILE_PATH.length() == 0) {
             std::cerr << "ERROR: --input flag is required" << std::endl;
             printUsage(argv[0]);
             return 1;
         }
-        if (LirpaConfiguration::PROPERTY_FILE_PATH.length() == 0) {
+        if (LunaConfiguration::PROPERTY_FILE_PATH.length() == 0) {
             std::cerr << "ERROR: --property or --vnnlib flag is required" << std::endl;
             printUsage(argv[0]);
             return 1;
         }
         
-        onnxFilePath = LirpaConfiguration::INPUT_FILE_PATH.ascii();
-        vnnlibFilePath = LirpaConfiguration::PROPERTY_FILE_PATH.ascii();
+        onnxFilePath = LunaConfiguration::INPUT_FILE_PATH.ascii();
+        vnnlibFilePath = LunaConfiguration::PROPERTY_FILE_PATH.ascii();
     } else {
         // Parse positional arguments
         if (argc < 3) {
@@ -197,7 +197,7 @@ int lirpaMain(int argc, char* argv[]) {
         onnxFilePath = argv[1];
         vnnlibFilePath = argv[2];
 
-        // Prepare arguments for LirpaConfiguration::parseArgs
+        // Prepare arguments for LunaConfiguration::parseArgs
         // We need to skip the first two positional arguments
         std::vector<char*> configArgs;
         configArgs.push_back(argv[0]);  // program name
@@ -206,7 +206,7 @@ int lirpaMain(int argc, char* argv[]) {
         }
 
         // Parse configuration arguments
-        LirpaConfiguration::parseArgs(static_cast<int>(configArgs.size()), configArgs.data());
+        LunaConfiguration::parseArgs(static_cast<int>(configArgs.size()), configArgs.data());
     }
 
     try {
@@ -214,17 +214,17 @@ int lirpaMain(int argc, char* argv[]) {
         at::set_num_threads(1);
         at::set_num_interop_threads(1);
         
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             std::cout << "Set threads to 1 for deterministic results" << std::endl;
         }
 
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             if (torch::cuda::is_available()) {
                 std::cout << "CUDA available with "
                           << torch::cuda::device_count() << " devices" << std::endl;
             }
             std::cout << "Using device: "
-                      << LirpaConfiguration::getDevice().str() << std::endl;
+                      << LunaConfiguration::getDevice().str() << std::endl;
         }
 
         std::cout << "Parsing ONNX file: " << onnxFilePath << std::endl;
@@ -236,7 +236,7 @@ int lirpaMain(int argc, char* argv[]) {
             String(vnnlibFilePath.c_str())
         );
 
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             std::cout << "TorchModel created successfully" << std::endl;
             std::cout << "Input size: " << torchModel->getInputSize() << std::endl;
             std::cout << "Output size: " << torchModel->getOutputSize() << std::endl;
@@ -251,7 +251,7 @@ int lirpaMain(int argc, char* argv[]) {
 
         BoundedTensor<torch::Tensor> inputBounds = torchModel->getInputBounds();
 
-        if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::VERBOSE) {
             std::cout << "\nInput bounds loaded from VNN-LIB file" << std::endl;
             torch::Tensor lowerBounds = inputBounds.lower();
             torch::Tensor upperBounds = inputBounds.upper();
@@ -269,12 +269,12 @@ int lirpaMain(int argc, char* argv[]) {
             C = torchModel->getSpecificationMatrix();
             specMatrix = &C;
 
-            if (LirpaConfiguration::VERBOSE) {
+            if (LunaConfiguration::VERBOSE) {
                 std::cout << "\nUsing specification matrix from VNN-LIB file with "
                           << C.size(0) << " constraints" << std::endl;
             }
         } else {
-            if (LirpaConfiguration::VERBOSE) {
+            if (LunaConfiguration::VERBOSE) {
                 std::cout << "\nNo output constraints found in VNN-LIB file, computing raw output bounds" << std::endl;
             }
         }
@@ -282,34 +282,34 @@ int lirpaMain(int argc, char* argv[]) {
         // Step 4: Run analysis based on configured method
         BoundedTensor<torch::Tensor> result;
 
-        if (LirpaConfiguration::ANALYSIS_METHOD == LirpaConfiguration::AnalysisMethod::AlphaCROWN) {
-            if (LirpaConfiguration::VERBOSE) {
+        if (LunaConfiguration::ANALYSIS_METHOD == LunaConfiguration::AnalysisMethod::AlphaCROWN) {
+            if (LunaConfiguration::VERBOSE) {
                 std::cout << "\nRunning Alpha-CROWN analysis..." << std::endl;
                 std::cout << "Configuration:" << std::endl;
                 std::cout << "  Method: AlphaCROWN" << std::endl;
-                std::cout << "  Iterations: " << LirpaConfiguration::ALPHA_ITERATIONS << std::endl;
-                std::cout << "  Optimize lower: " << (LirpaConfiguration::OPTIMIZE_LOWER ? "true" : "false") << std::endl;
-                std::cout << "  Optimize upper: " << (LirpaConfiguration::OPTIMIZE_UPPER ? "true" : "false") << std::endl;
+                std::cout << "  Iterations: " << LunaConfiguration::ALPHA_ITERATIONS << std::endl;
+                std::cout << "  Optimize lower: " << (LunaConfiguration::OPTIMIZE_LOWER ? "true" : "false") << std::endl;
+                std::cout << "  Optimize upper: " << (LunaConfiguration::OPTIMIZE_UPPER ? "true" : "false") << std::endl;
             }
             
             result = torchModel->compute_bounds(
                 inputBounds,
                 specMatrix,  // Specification matrix (or nullptr if no constraints)
-                LirpaConfiguration::AnalysisMethod::AlphaCROWN,
-                LirpaConfiguration::COMPUTE_LOWER,
-                LirpaConfiguration::COMPUTE_UPPER
+                LunaConfiguration::AnalysisMethod::AlphaCROWN,
+                LunaConfiguration::COMPUTE_LOWER,
+                LunaConfiguration::COMPUTE_UPPER
             );
         } else {
-            if (LirpaConfiguration::VERBOSE) {
+            if (LunaConfiguration::VERBOSE) {
                 std::cout << "\nRunning CROWN analysis..." << std::endl;
             }
             
             result = torchModel->compute_bounds(
                 inputBounds,
                 specMatrix,  // Specification matrix (or nullptr if no constraints)
-                LirpaConfiguration::AnalysisMethod::CROWN,
-                LirpaConfiguration::COMPUTE_LOWER,
-                LirpaConfiguration::COMPUTE_UPPER
+                LunaConfiguration::AnalysisMethod::CROWN,
+                LunaConfiguration::COMPUTE_LOWER,
+                LunaConfiguration::COMPUTE_UPPER
             );
         }
 
@@ -359,7 +359,7 @@ int lirpaMain(int argc, char* argv[]) {
 
         return 0;
 
-    } catch (const LirpaError& e) {
+    } catch (const LunaError& e) {
         std::cerr << "Error: " << e.getErrorClass() << " (code " << e.getCode() << ")" << std::endl;
         if (e.getUserMessage() && strlen(e.getUserMessage()) > 0) {
             std::cerr << "Message: " << e.getUserMessage() << std::endl;

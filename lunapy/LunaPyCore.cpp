@@ -12,7 +12,7 @@
 #include <torch/torch.h>
 #include "engine/TorchModel.h"
 #include "common/BoundedTensor.h"
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 #include "MString.h"
 
 namespace py = pybind11;
@@ -63,7 +63,7 @@ torch::Tensor numpy_to_torch(py::array_t<float> array) {
         options
     ).clone();
 
-    return tensor.to(LirpaConfiguration::getDevice());
+    return tensor.to(LunaConfiguration::getDevice());
 }
 
 // Python wrapper for BoundedTensor
@@ -173,11 +173,11 @@ public:
         py::object C = py::none()
     ) {
         // Parse method string
-        LirpaConfiguration::AnalysisMethod analysis_method;
+        LunaConfiguration::AnalysisMethod analysis_method;
         if (method == "CROWN" || method == "crown") {
-            analysis_method = LirpaConfiguration::AnalysisMethod::CROWN;
+            analysis_method = LunaConfiguration::AnalysisMethod::CROWN;
         } else if (method == "alpha-CROWN" || method == "AlphaCROWN" || method == "alphacrown") {
-            analysis_method = LirpaConfiguration::AnalysisMethod::AlphaCROWN;
+            analysis_method = LunaConfiguration::AnalysisMethod::AlphaCROWN;
         } else {
             throw std::invalid_argument("Unknown method: " + method + ". Use 'CROWN' or 'alpha-CROWN'");
         }
@@ -312,28 +312,28 @@ PYBIND11_MODULE(LirpaPyCore, m) {
                    ", output_size=" + std::to_string(model.getOutputSize()) + ">";
         });
     
-    // Expose LirpaConfiguration settings
-    py::class_<LirpaConfiguration>(m, "LirpaConfiguration")
-        .def_readwrite_static("VERBOSE", &LirpaConfiguration::VERBOSE)
-        .def_readwrite_static("COMPUTE_LOWER", &LirpaConfiguration::COMPUTE_LOWER)
-        .def_readwrite_static("COMPUTE_UPPER", &LirpaConfiguration::COMPUTE_UPPER)
-        .def_readwrite_static("ALPHA_ITERATIONS", &LirpaConfiguration::ALPHA_ITERATIONS)
-        .def_readwrite_static("ALPHA_LR", &LirpaConfiguration::ALPHA_LR)
-        .def_readwrite_static("OPTIMIZE_LOWER", &LirpaConfiguration::OPTIMIZE_LOWER)
-        .def_readwrite_static("OPTIMIZE_UPPER", &LirpaConfiguration::OPTIMIZE_UPPER)
-        .def_readwrite_static("USE_CUDA", &LirpaConfiguration::USE_CUDA)
-        .def_readwrite_static("CUDA_DEVICE_ID", &LirpaConfiguration::CUDA_DEVICE_ID)
+    // Expose LunaConfiguration settings
+    py::class_<LunaConfiguration>(m, "LunaConfiguration")
+        .def_readwrite_static("VERBOSE", &LunaConfiguration::VERBOSE)
+        .def_readwrite_static("COMPUTE_LOWER", &LunaConfiguration::COMPUTE_LOWER)
+        .def_readwrite_static("COMPUTE_UPPER", &LunaConfiguration::COMPUTE_UPPER)
+        .def_readwrite_static("ALPHA_ITERATIONS", &LunaConfiguration::ALPHA_ITERATIONS)
+        .def_readwrite_static("ALPHA_LR", &LunaConfiguration::ALPHA_LR)
+        .def_readwrite_static("OPTIMIZE_LOWER", &LunaConfiguration::OPTIMIZE_LOWER)
+        .def_readwrite_static("OPTIMIZE_UPPER", &LunaConfiguration::OPTIMIZE_UPPER)
+        .def_readwrite_static("USE_CUDA", &LunaConfiguration::USE_CUDA)
+        .def_readwrite_static("CUDA_DEVICE_ID", &LunaConfiguration::CUDA_DEVICE_ID)
         .def_static("set_device", [](const std::string& device_str) {
             if (device_str == "cpu" || device_str == "CPU") {
-                LirpaConfiguration::USE_CUDA = false;
+                LunaConfiguration::USE_CUDA = false;
             } else if (device_str.rfind("cuda", 0) == 0 || device_str.rfind("CUDA", 0) == 0) {
-                LirpaConfiguration::USE_CUDA = true;
+                LunaConfiguration::USE_CUDA = true;
                 auto colon = device_str.find(':');
                 if (colon != std::string::npos) {
-                    LirpaConfiguration::CUDA_DEVICE_ID = std::stoi(device_str.substr(colon + 1));
+                    LunaConfiguration::CUDA_DEVICE_ID = std::stoi(device_str.substr(colon + 1));
                 }
             }
-            LirpaConfiguration::updateDeviceFromFlags();
+            LunaConfiguration::updateDeviceFromFlags();
         });
     
     // Version info

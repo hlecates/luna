@@ -3,7 +3,7 @@
 
 #include "Debug.h"
 #include "MStringf.h"
-#include "LirpaError.h"
+#include "LunaError.h"
 #include "TimeUtils.h"
 
 #include <sstream>
@@ -37,18 +37,18 @@ AlphaCROWNAnalysis::AlphaCROWNAnalysis(TorchModel* torchModel)
     : _torchModel(torchModel)
     , _alphaEnabled(true)
     , _initialized(false)
-    , _iteration(LirpaConfiguration::ALPHA_ITERATIONS)
-    , _learningRate(LirpaConfiguration::ALPHA_LR)
+    , _iteration(LunaConfiguration::ALPHA_ITERATIONS)
+    , _learningRate(LunaConfiguration::ALPHA_LR)
     , _optimizationStage("init")
 {
     if (!_torchModel) {
-        throw LirpaError(LirpaError::UNINITIALIZED_NODE, "AlphaCROWNAnalysis requires a valid TorchModel instance");
+        throw LunaError(LunaError::UNINITIALIZED_NODE, "AlphaCROWNAnalysis requires a valid TorchModel instance");
     }
 
     // Create CROWN analysis instance
     _crownAnalysis = std::make_unique<CROWNAnalysis>(_torchModel);
     
-    // Initialize from LirpaConfiguration
+    // Initialize from LunaConfiguration
     updateFromConfig();
     //_crownAnalysis = std::make_unique<CROWNAnalysis>(_torchModel, false);
 }
@@ -139,7 +139,7 @@ void AlphaCROWNAnalysis::performCROWNInitializationPass()
 {
     log("performCROWNInitializationPass() - Running standard CROWN to capture relaxation slopes");
 
-    LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+    LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
     
     _crownAnalysis->resetProcessingState();
 
@@ -260,7 +260,7 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
 {
     // Determine if this is for lower or upper bound based on current optimization stage
     // This is a simplified approach - in dual optimization, this will be called separately for each bound
-    bool isLower = (LirpaConfiguration::BOUND_SIDE == LirpaConfiguration::BoundSide::Lower);
+    bool isLower = (LunaConfiguration::BOUND_SIDE == LunaConfiguration::BoundSide::Lower);
 
     // printf("[DEBUG] ensureAlphaFor node=%u, startKey=%s, bound_side=%s\n",
     //        nodeIndex, startKey.c_str(), isLower ? "LOWER" : "UPPER");
@@ -334,10 +334,10 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
 }
 
 // NEW REFACTORED ENTRY METHOD - Returns optimized bounds for specified side
-torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::BoundSide side)
+torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::BoundSide side)
 {
     log(Stringf("computeOptimizedBounds() - Starting optimization for %s bounds",
-                side == LirpaConfiguration::BoundSide::Lower ? "LOWER" : "UPPER"));
+                side == LunaConfiguration::BoundSide::Lower ? "LOWER" : "UPPER"));
 
     // Initialize alpha parameters if not already done
     if (!_initialized) {
@@ -349,12 +349,12 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
     if (!shouldPerformOptimization()) {
         log("computeOptimizedBounds() - Alpha optimization not applicable, falling back to standard CROWN");
         _crownAnalysis->run(false); // No gradients needed for standard CROWN
-        return side == LirpaConfiguration::BoundSide::Lower ? extractLowerBoundsFromCROWN() : extractUpperBoundsFromCROWN();
+        return side == LunaConfiguration::BoundSide::Lower ? extractLowerBoundsFromCROWN() : extractUpperBoundsFromCROWN();
     }
 
     // Set the bound side in config
-    LirpaConfiguration::BOUND_SIDE = side;
-    bool isLower = (side == LirpaConfiguration::BoundSide::Lower);
+    LunaConfiguration::BOUND_SIDE = side;
+    bool isLower = (side == LunaConfiguration::BoundSide::Lower);
 
     // Reset alpha parameters from CROWN slopes for this bound side
     resetAlphasFromCROWNSlopes(isLower);
@@ -363,7 +363,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
     setOptimizationStage("opt");
 
     // Disable first linear IBP for alpha optimization
-    LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+    LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
 
     // Run one CROWN pass to trigger lazy alpha parameter creation
     // This is necessary because alphas are created on-demand during backward pass
@@ -443,7 +443,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
     if (alphaParams.empty()) {
         log("computeOptimizedBounds() - No alpha parameters found, returning CROWN bounds");
         _crownAnalysis->run(false); // No gradients needed for fallback CROWN
-        return side == LirpaConfiguration::BoundSide::Lower ? extractLowerBoundsFromCROWN() : extractUpperBoundsFromCROWN();
+        return side == LunaConfiguration::BoundSide::Lower ? extractLowerBoundsFromCROWN() : extractUpperBoundsFromCROWN();
     }
 
     auto optimizer = std::make_shared<torch::optim::Adam>(
@@ -630,7 +630,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
             clipAlphaParameters();
 
             // Learning rate decay
-            currentLR *= LirpaConfiguration::ALPHA_LR_DECAY;
+            currentLR *= LunaConfiguration::ALPHA_LR_DECAY;
             for (auto& group : optimizer->param_groups()) {
                 if (auto adamGroup = dynamic_cast<torch::optim::AdamOptions*>(&group.options())) {
                     adamGroup->lr(currentLR);
@@ -681,7 +681,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 // std::pair<torch::Tensor, torch::Tensor> AlphaCROWNAnalysis::computeBoundsWithAlpha(BoundSide side)
 // {
 //     log(Stringf("computeBoundsWithAlpha() - Computing bounds for %s",
-//                 side == LirpaConfiguration::BoundSide::Lower ? "LOWER" : "UPPER"));
+//                 side == LunaConfiguration::BoundSide::Lower ? "LOWER" : "UPPER"));
 // 
 //     // Set the bound side in config (used by ensureAlphaFor to select correct alpha storage)
 //     _config.bound_side = side;
@@ -690,7 +690,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 //     setOptimizationStage("opt");
 // 
 //     // Disable first linear IBP for alpha optimization
-//     LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+//     LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
 // 
 //     // Clear previous concrete bounds and reset processing state
 //     _crownAnalysis->clearConcreteBounds();
@@ -704,7 +704,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 //     torch::Tensor upperBounds = extractUpperBoundsFromCROWN();
 // 
 //     log(Stringf("computeBoundsWithAlpha() - Bounds computed for %s",
-//                 side == LirpaConfiguration::BoundSide::Lower ? "LOWER" : "UPPER"));
+//                 side == LunaConfiguration::BoundSide::Lower ? "LOWER" : "UPPER"));
 // 
 //     return std::make_pair(lowerBounds, upperBounds);
 // }
@@ -836,7 +836,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 //         for (auto& nodePair : _optimizableNodes) {
 //             nodePair.second->setAlphaCrownAnalysis(this);
 //         }
-//         LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+//         LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
 // 
 //         // Enable NoGradGuard for the last iteration
 //         std::unique_ptr<torch::NoGradGuard> no_grad_guard;
@@ -902,7 +902,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 //     // Final Upper Bound Pass (with best alpha)
 //     restoreBestAlphas(false); // false = upper
 // 
-//     LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+//     LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
 //     _crownAnalysis->clearConcreteBounds();
 //     _crownAnalysis->resetProcessingState();
 //     _crownAnalysis->run();
@@ -939,7 +939,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 //         for (auto& nodePair : _optimizableNodes) {
 //             nodePair.second->setAlphaCrownAnalysis(this);
 //         }
-//         LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+//         LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
 // 
 //         // Enable NoGradGuard for the last iteration
 //         std::unique_ptr<torch::NoGradGuard> no_grad_guard;
@@ -1005,7 +1005,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LirpaConfiguration::Bou
 //     // Final Lower Bound Pass (with best alpha)
 //     restoreBestAlphas(true); // true = lower
 // 
-//     LirpaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
+//     LunaConfiguration::ENABLE_FIRST_LINEAR_IBP = false;
 //     _crownAnalysis->clearConcreteBounds();
 //     _crownAnalysis->resetProcessingState();
 //     _crownAnalysis->run();
@@ -1503,15 +1503,15 @@ torch::Tensor AlphaCROWNAnalysis::getAlphaForNodeAllSpecs(
     const torch::Tensor& input_lb,
     const torch::Tensor& input_ub)
 {
-    (void)isLower; // Unused - we use LirpaConfiguration::BOUND_SIDE instead in dual-sided optimization
+    (void)isLower; // Unused - we use LunaConfiguration::BOUND_SIDE instead in dual-sided optimization
 
-    // In dual-sided optimization, we use LirpaConfiguration::BOUND_SIDE to determine which alpha storage to use
+    // In dual-sided optimization, we use LunaConfiguration::BOUND_SIDE to determine which alpha storage to use
     // The isLower parameter indicates which bound is being computed, but we always use alphas
-    // from the current optimization side (stored in LirpaConfiguration::BOUND_SIDE)
+    // from the current optimization side (stored in LunaConfiguration::BOUND_SIDE)
     // This ensures that during upper bound optimization, we use upper alphas even when computing lower bounds
 
     // Ensure per-(node,start) α exists with correct shape & initialization
-    // This will use LirpaConfiguration::BOUND_SIDE (set by the optimization loop) to choose the correct storage
+    // This will use LunaConfiguration::BOUND_SIDE (set by the optimization loop) to choose the correct storage
     auto& ap = ensureAlphaFor(nodeIndex, startKey, specDim, outDim, input_lb, input_ub);
 
     // ap.alpha: [spec, 1, out] -> drop batch dimension
@@ -1657,20 +1657,20 @@ TorchModel* AlphaCROWNAnalysis::getTorchModel() const
     return _torchModel;
 }
 
-// Configuration synchronization - read from LirpaConfiguration
+// Configuration synchronization - read from LunaConfiguration
 void AlphaCROWNAnalysis::updateFromConfig()
 {
-    _alphaEnabled = (LirpaConfiguration::ANALYSIS_METHOD == LirpaConfiguration::AnalysisMethod::AlphaCROWN);
-    _iteration = LirpaConfiguration::ALPHA_ITERATIONS;
-    _learningRate = LirpaConfiguration::ALPHA_LR;
+    _alphaEnabled = (LunaConfiguration::ANALYSIS_METHOD == LunaConfiguration::AnalysisMethod::AlphaCROWN);
+    _iteration = LunaConfiguration::ALPHA_ITERATIONS;
+    _learningRate = LunaConfiguration::ALPHA_LR;
     
-    log(Stringf("updateFromConfig() - Updated from LirpaConfiguration: enable=%s, iterations=%u, lr=%.3f", 
+    log(Stringf("updateFromConfig() - Updated from LunaConfiguration: enable=%s, iterations=%u, lr=%.3f", 
                _alphaEnabled ? "true" : "false", _iteration, _learningRate));
 }
 
 void AlphaCROWNAnalysis::log(const String& message)
 {
-    if (LirpaConfiguration::NETWORK_LEVEL_REASONER_LOGGING || LirpaConfiguration::VERBOSE) {
+    if (LunaConfiguration::NETWORK_LEVEL_REASONER_LOGGING || LunaConfiguration::VERBOSE) {
         printf("AlphaCROWNAnalysis: %s\n", message.ascii());
     }
 }

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "src/engine/TorchModel.h"
-#include "src/configuration/LirpaConfiguration.h"
+#include "src/configuration/LunaConfiguration.h"
 #include "fixtures/model_builders.h"
 #include "fixtures/tensor_comparators.h"
 #include <torch/torch.h>
@@ -13,7 +13,7 @@ protected:
     void SetUp() override {
         at::set_num_threads(1);
         at::set_num_interop_threads(1);
-        LirpaConfiguration::ALPHA_ITERATIONS = 10;
+        LunaConfiguration::ALPHA_ITERATIONS = 10;
     }
 };
 

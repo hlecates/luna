@@ -6,7 +6,7 @@
 #include "Map.h"
 #include "Vector.h"
 #include "MString.h"
-#include "configuration/LirpaConfiguration.h"
+#include "configuration/LunaConfiguration.h"
 
 #include <torch/torch.h>
 #include <memory>
@@ -19,8 +19,8 @@ namespace NLR {
 class BoundedAlphaOptimizeNode;
 class TorchModel;
 
-// BoundSide enum and AlphaCROWNConfig struct moved to LirpaConfiguration
-// Use LirpaConfiguration::BoundSide and LirpaConfiguration static members
+// BoundSide enum and AlphaCROWNConfig struct moved to LunaConfiguration
+// Use LunaConfiguration::BoundSide and LunaConfiguration static members
 
 // Structure to hold alpha parameters for a single layer and start
 // similar to auto_LiRPA's alpha tensor format
@@ -87,7 +87,7 @@ public:
 
     // NEW REFACTORED ENTRY METHOD - Returns optimized bounds for specified side
     // This method handles the complete optimization loop internally
-    torch::Tensor computeOptimizedBounds(LirpaConfiguration::BoundSide side);
+    torch::Tensor computeOptimizedBounds(LunaConfiguration::BoundSide side);
 
     /* DEPRECATED - OLD IMPLEMENTATIONS
     std::pair<torch::Tensor, torch::Tensor> computeBoundsWithAlpha(BoundSide side);
@@ -119,28 +119,28 @@ public:
     
     float getLearningRate() const { return _learningRate; }
     void setLearningRate(float lr) { _learningRate = lr; }
-    void decayLearningRate() { _learningRate *= LirpaConfiguration::ALPHA_LR_DECAY; }
+    void decayLearningRate() { _learningRate *= LunaConfiguration::ALPHA_LR_DECAY; }
     
-    // Configuration is now accessed via LirpaConfiguration static members
-    // Removed getConfig()/setConfig() methods - use LirpaConfiguration directly
+    // Configuration is now accessed via LunaConfiguration static members
+    // Removed getConfig()/setConfig() methods - use LunaConfiguration directly
     
-    // Set individual config options (update LirpaConfiguration directly)
+    // Set individual config options (update LunaConfiguration directly)
     void setIteration(unsigned iteration) { 
-        LirpaConfiguration::ALPHA_ITERATIONS = iteration; 
+        LunaConfiguration::ALPHA_ITERATIONS = iteration; 
         _iteration = iteration; 
     }
     void setLrAlpha(float lr) { 
-        LirpaConfiguration::ALPHA_LR = lr; 
+        LunaConfiguration::ALPHA_LR = lr; 
         _learningRate = lr; 
     }
-    void setKeepBest(bool keep) { LirpaConfiguration::KEEP_BEST = keep; }
-    void setOptimizer(const std::string& opt) { LirpaConfiguration::OPTIMIZER = String(opt.c_str()); }
-    void setBoundSide(LirpaConfiguration::BoundSide side) { LirpaConfiguration::BOUND_SIDE = side; }
+    void setKeepBest(bool keep) { LunaConfiguration::KEEP_BEST = keep; }
+    void setOptimizer(const std::string& opt) { LunaConfiguration::OPTIMIZER = String(opt.c_str()); }
+    void setBoundSide(LunaConfiguration::BoundSide side) { LunaConfiguration::BOUND_SIDE = side; }
 
-    // Optimization side queries (read from LirpaConfiguration)
-    LirpaConfiguration::BoundSide getBoundSide() const { return LirpaConfiguration::BOUND_SIDE; }
-    bool isOptimizingLower() const { return LirpaConfiguration::BOUND_SIDE == LirpaConfiguration::BoundSide::Lower; }
-    bool isOptimizingUpper() const { return LirpaConfiguration::BOUND_SIDE == LirpaConfiguration::BoundSide::Upper; }
+    // Optimization side queries (read from LunaConfiguration)
+    LunaConfiguration::BoundSide getBoundSide() const { return LunaConfiguration::BOUND_SIDE; }
+    bool isOptimizingLower() const { return LunaConfiguration::BOUND_SIDE == LunaConfiguration::BoundSide::Lower; }
+    bool isOptimizingUpper() const { return LunaConfiguration::BOUND_SIDE == LunaConfiguration::BoundSide::Upper; }
 
 private:
 
@@ -160,7 +160,7 @@ private:
     // Optimizable activation nodes
     std::vector<std::pair<unsigned, std::shared_ptr<BoundedAlphaOptimizeNode>>> _optimizableNodes;
     
-    // Configuration is now accessed via LirpaConfiguration static members
+    // Configuration is now accessed via LunaConfiguration static members
     // Removed _config member variable
     bool _alphaEnabled;         // Whether alpha optimization is enabled
     bool _initialized;          // Whether alpha parameters have been initialized

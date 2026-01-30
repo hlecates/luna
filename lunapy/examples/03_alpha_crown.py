@@ -8,7 +8,7 @@ This example demonstrates:
 - Comparing CROWN vs Alpha-CROWN
 """
 
-from lirpapy import TorchModel, LirpaConfiguration
+from lunapy import TorchModel, LunaConfiguration
 import numpy as np
 import time
 from pathlib import Path
@@ -43,8 +43,8 @@ def main():
     
     # Run Alpha-CROWN with default settings
     print(f"\n3. Running Alpha-CROWN (default settings)...")
-    print(f"   Iterations: {LirpaConfiguration.ALPHA_ITERATIONS}")
-    print(f"   Learning rate: {LirpaConfiguration.ALPHA_LR}")
+    print(f"   Iterations: {LunaConfiguration.ALPHA_ITERATIONS}")
+    print(f"   Learning rate: {LunaConfiguration.ALPHA_LR}")
     
     start = time.time()
     alpha_result = model.compute_bounds(method='alpha-CROWN')
@@ -69,12 +69,12 @@ def main():
     # Try with more iterations
     print(f"\n5. Running Alpha-CROWN with more iterations...")
     
-    LirpaConfiguration.ALPHA_ITERATIONS = 50
-    LirpaConfiguration.ALPHA_LR = 0.1
-    LirpaConfiguration.VERBOSE = False
+    LunaConfiguration.ALPHA_ITERATIONS = 50
+    LunaConfiguration.ALPHA_LR = 0.1
+    LunaConfiguration.VERBOSE = False
     
-    print(f"   Iterations: {LirpaConfiguration.ALPHA_ITERATIONS}")
-    print(f"   Learning rate: {LirpaConfiguration.ALPHA_LR}")
+    print(f"   Iterations: {LunaConfiguration.ALPHA_ITERATIONS}")
+    print(f"   Learning rate: {LunaConfiguration.ALPHA_LR}")
     
     start = time.time()
     alpha_result2 = model.compute_bounds(method='alpha-CROWN')
@@ -101,9 +101,9 @@ def main():
     # Optimization settings exploration
     print(f"\n7. Optimizing only lower bounds...")
     
-    LirpaConfiguration.OPTIMIZE_LOWER = True
-    LirpaConfiguration.OPTIMIZE_UPPER = False
-    LirpaConfiguration.ALPHA_ITERATIONS = 20
+    LunaConfiguration.OPTIMIZE_LOWER = True
+    LunaConfiguration.OPTIMIZE_UPPER = False
+    LunaConfiguration.ALPHA_ITERATIONS = 20
     
     result_lower = model.compute_bounds(method='alpha-CROWN')
     

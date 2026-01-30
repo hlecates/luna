@@ -3,7 +3,7 @@
 
 #include "BoundedTorchNode.h"
 #include "MStringf.h"
-#include "LirpaConfiguration.h"
+#include "LunaConfiguration.h"
 
 // Undefine Warning macro to avoid conflict with PyTorch
 #ifdef Warning
