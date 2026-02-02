@@ -513,130 +513,163 @@ torch::Tensor BoundedReLUNode::getAlphaForBound(bool isLowerBound, int boundType
 }
 
 // Apply masking for stable/unstable neurons (following auto_LiRPA approach)
+// FIXED: Properly handle unstable-only alpha tensors and shape broadcasting
 void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::Tensor& input_upper, const torch::Tensor& upper_d, RelaxationResult& result)
 {
-    auto unstable = (input_lower < 0) & (input_upper > 0);
+    // Compute neuron status masks (flattened to match neuron dimension)
+    auto input_lb_flat = input_lower.flatten();
+    auto input_ub_flat = input_upper.flatten();
+    auto always_active_mask = input_lb_flat >= 0;      // [outDim]
+    auto always_inactive_mask = input_ub_flat <= 0;    // [outDim]
+    auto unstable = (input_lb_flat < 0) & (input_ub_flat > 0); // [outDim]
+    int outDim = (int)input_lb_flat.numel();
 
     // For alpha optimization - alpha is the optimizable slope
-    // IMPORTANT: Only apply alpha for the OUTPUT backward pass (when computing final bounds)
-    // Intermediate backward passes (for ReLU pre-activation bounds) should use standard CROWN
+    // Apply alpha optimization for ALL backward passes (output AND intermediate)
+    // Each backward pass uses alpha keyed by startKey, enabling per-target optimization
     if (isAlphaOptimizationEnabled() && _alphaCrownAnalysis && _currentSpecDim > 0) {
-        // Fetch alpha with LIVE spec dimensions from last_lA
         auto* crown = _alphaCrownAnalysis->getCROWNAnalysis();
         std::string startKey = crown->currentStartKey();
         if (startKey.empty()) startKey = "default";
 
-        // Only apply alpha optimization for output node backward pass
-        // Check if this is the output node by comparing startKey with output index
-        unsigned outputIndex = crown->getOutputIndex();
-        std::string outputKey = "/" + std::to_string(outputIndex);
-
+        // DEBUG: Print alpha application for every ReLU during backward pass
         if (LunaConfiguration::VERBOSE) {
-            printf("[DEBUG _maskAlpha] node=%u, startKey=%s, outputKey=%s, match=%s\n",
-                   getNodeIndex(), startKey.c_str(), outputKey.c_str(),
-                   (startKey == outputKey) ? "YES (apply alpha)" : "NO (skip alpha)");
+            printf("[DEBUG _maskAlpha] node=%u, startKey=%s: APPLYING optimized alpha\n",
+                   getNodeIndex(), startKey.c_str());
         }
 
-        if (startKey != outputKey) {
-            // This is an intermediate backward pass - skip alpha optimization
-            // Fall through to standard CROWN relaxation below
-            goto skip_alpha;
-        }
+        int specDim = _currentSpecDim;
 
-        // Get the actual output dimension from input_lower
-        // input_lower can be either [neurons] or [batch, neurons] or higher dimensional
-        // We want the total number of neurons, which is the product of all dimensions
-        int outDim = (int)input_lower.numel();
-        int specDim = _currentSpecDim; // Use the live spec dimension from last_lA
-
-        // DEBUG: Print shapes to understand the mismatch (disabled for clean output)
-        // printf("[DEBUG _maskAlpha] input_lower shape:");
-        // for (int i = 0; i < input_lower.dim(); ++i) {
-        //     printf(" %lld", (long long)input_lower.size(i));
-        // }
-        // printf(", outDim=%d, specDim=%d\n", outDim, specDim);
-
-        auto alpha_tensor = _alphaCrownAnalysis->getAlphaForNodeAllSpecs(
+        // Get alpha result (now returns AlphaResult with unstable-only alpha)
+        auto alphaResult = _alphaCrownAnalysis->getAlphaForNodeAllSpecs(
             getNodeIndex(), /*isLower=*/true,
             startKey, specDim, outDim,
-            input_lower, input_upper); // Returns [spec, out]
+            input_lower, input_upper);
 
-        if (LunaConfiguration::VERBOSE && alpha_tensor.defined()) {
-            printf("[DEBUG _maskAlpha] node=%u, alpha_tensor shape=[%lld,%lld], mean=%.4f, min=%.4f, max=%.4f\n",
+        if (LunaConfiguration::VERBOSE && alphaResult.alpha.defined()) {
+            printf("[DEBUG _maskAlpha] node=%u, alpha shape=[%lld,%lld], numUnstable=%d, outDim=%d\n",
                    getNodeIndex(),
-                   alpha_tensor.dim() >= 1 ? (long long)alpha_tensor.size(0) : 0,
-                   alpha_tensor.dim() >= 2 ? (long long)alpha_tensor.size(1) : 0,
-                   alpha_tensor.mean().item<float>(),
-                   alpha_tensor.min().item<float>(),
-                   alpha_tensor.max().item<float>());
+                   alphaResult.alpha.dim() >= 1 ? (long long)alphaResult.alpha.size(0) : 0,
+                   alphaResult.alpha.dim() >= 2 ? (long long)alphaResult.alpha.size(1) : 0,
+                   alphaResult.numUnstable, alphaResult.outDim);
         }
 
-        if (alpha_tensor.defined() && alpha_tensor.numel() > 0) {
-            // Clamp alpha to [0,1], keep per-spec
-            auto alpha_clamped = torch::clamp(alpha_tensor, 0.0, 1.0); // [spec, out]
+        if (alphaResult.numUnstable > 0 && alphaResult.alpha.defined() && alphaResult.alpha.numel() > 0) {
+            // Clone alpha to create a fresh tensor for this iteration's computation graph.
+            // This is necessary because alphaResult.alpha is a view of the parameter tensor
+            // that persists across iterations. Using it directly would cause either:
+            // 1. "modified by inplace operation" errors (if we clamp it)
+            // 2. "backward through graph a second time" errors (if we reuse graph nodes)
+            // The clone() operation preserves gradient flow - gradients from the clone
+            // will flow back to the original alpha parameter during backward().
+            auto alpha_unstable = alphaResult.alpha.clone(); // [spec, numUnstable]
 
-            // Broadcast unstable mask to [spec, out]
-            auto unstable_spec = unstable.reshape({1, -1}).expand({specDim, outDim});
+            // Create full alpha tensor [spec, outDim] using functional operations only.
+            // IMPORTANT: Avoid in-place operations (index_put_, scatter_) which create
+            // IndexPutBackward0 nodes that can cause "backward through graph a second time"
+            // errors when tensors are reused across optimization iterations.
+            auto options = alpha_unstable.options();
 
-            // Per-spec α on unstable, 0 elsewhere
-            auto alpha_spec = torch::where(unstable_spec, alpha_clamped, torch::zeros_like(alpha_clamped)); // [spec, out]
+            // Expand masks to [spec, outDim] for broadcasting
+            auto always_active_expanded = always_active_mask.unsqueeze(0).expand({specDim, outDim});
 
-            // Per-spec "upper" slope for the A<0 branch
-            auto k_upper_spec = upper_d.reshape({1, -1}).expand_as(alpha_spec); // [spec, out]
+            // Build alpha_full using scatter (non-in-place version returns new tensor)
+            // Expand indices from [numUnstable] to [specDim, numUnstable] for scatter
+            auto indices = alphaResult.unstableIndices.unsqueeze(0).expand({specDim, alphaResult.numUnstable});
+
+            // scatter() returns a new tensor (not in-place like scatter_())
+            // This places alpha_unstable values at the positions specified by indices
+            torch::Tensor alpha_full = torch::zeros({specDim, outDim}, options).scatter(1, indices, alpha_unstable);
+
+            // Apply always_active mask: set those neurons to 1.0
+            alpha_full = torch::where(always_active_expanded,
+                                      torch::ones({specDim, outDim}, options),
+                                      alpha_full);
+
+            // Per-spec "upper" slope for the A<0 branch (secant slope)
+            // Apply stable neuron masking (same as standard CROWN path)
+            auto upper_d_flat = upper_d.flatten();
+            auto upper_d_masked = torch::where(always_active_mask, torch::ones_like(upper_d_flat), upper_d_flat);
+            upper_d_masked = torch::where(always_inactive_mask, torch::zeros_like(upper_d_masked), upper_d_masked);
+            auto k_upper_spec = upper_d_masked.unsqueeze(0).expand({specDim, outDim}); // [spec, outDim]
 
             // Write per-spec lower-path choices
-            result.lb_lower_d = alpha_spec;      // used when A ≥ 0
-            result.lb_upper_d = k_upper_spec;    // used when A < 0
+            result.lb_lower_d = alpha_full;       // used when A ≥ 0
+            result.lb_upper_d = k_upper_spec;     // used when A < 0
 
             // Write per-spec upper-path choices
-            result.ub_upper_d = k_upper_spec;    // used when A ≥ 0
-            result.ub_lower_d = alpha_spec;      // used when A < 0
+            result.ub_upper_d = k_upper_spec;     // used when A ≥ 0
+            result.ub_lower_d = alpha_full;       // used when A < 0
 
-            // Biases:
-            // For alpha-CROWN lower bound:
-            //   - When A ≥ 0: use (alpha, 0) -> bias_lower = 0
-            //   - When A < 0: use (k_upper, bias_upper) -> need the secant bias
-            // So bias_lower is used for Apos branch (always 0), bias_upper for Aneg branch
-            auto b_upper = -input_lower * upper_d; // [out] - secant bias
-            result.bias_lower = torch::zeros_like(input_lower); // [out] - for Apos (alpha) branch
-            result.bias_upper = b_upper;                         // [out] - for Aneg (secant) branch
+            // Biases (shape: [outDim])
+            auto b_upper = -input_lb_flat * upper_d_flat; // secant bias
+            // Apply stable neuron masking to bias_upper (same as standard CROWN path)
+            auto b_upper_masked = torch::where(always_active_mask | always_inactive_mask,
+                                               torch::zeros_like(b_upper),
+                                               b_upper);
+            result.bias_lower = torch::zeros_like(input_lb_flat); // for Apos (alpha) branch
+            result.bias_upper = b_upper_masked;                    // for Aneg (secant) branch
+
+            // Skip the standard masking below since we've already set everything
+            return;
         }
     }
 
 skip_alpha:
+    // Standard CROWN relaxation (no alpha optimization)
+    // Flatten tensors for consistent shape handling
+    auto upper_d_flat = upper_d.flatten();
+    auto d_lower_flat = result.d_lower.flatten();
+    auto d_upper_flat = result.d_upper.flatten();
+    auto bias_lower_flat = result.bias_lower.flatten();
+    auto bias_upper_flat = result.bias_upper.flatten();
+
     // Apply upper bound slopes (secant line for unstable neurons)
-    if (!isAlphaOptimizationEnabled() || !_alphaCrownAnalysis) {
-        result.d_upper = torch::where(unstable, upper_d, result.d_upper);
-        auto bU_fallback = -input_lower * upper_d;
-        result.bias_upper = torch::where(unstable, bU_fallback, result.bias_upper);
-    } else {
-        result.d_upper = torch::where(unstable, upper_d, result.d_upper);
-        auto bU_alpha = -input_lower * upper_d;
-        result.bias_upper = torch::where(unstable, bU_alpha, result.bias_upper);
+    d_upper_flat = torch::where(unstable, upper_d_flat, d_upper_flat);
+    auto bU = -input_lb_flat * upper_d_flat;
+    bias_upper_flat = torch::where(unstable, bU, bias_upper_flat);
+
+    // Apply masking for stable neurons
+    d_lower_flat = torch::where(always_active_mask, torch::ones_like(d_lower_flat), d_lower_flat);
+    d_lower_flat = torch::where(always_inactive_mask, torch::zeros_like(d_lower_flat), d_lower_flat);
+    bias_lower_flat = torch::where(always_active_mask | always_inactive_mask,
+                                   torch::zeros_like(bias_lower_flat), bias_lower_flat);
+
+    d_upper_flat = torch::where(always_active_mask, torch::ones_like(d_upper_flat), d_upper_flat);
+    d_upper_flat = torch::where(always_inactive_mask, torch::zeros_like(d_upper_flat), d_upper_flat);
+    bias_upper_flat = torch::where(always_active_mask | always_inactive_mask,
+                                   torch::zeros_like(bias_upper_flat), bias_upper_flat);
+
+    // Write back the flattened results
+    result.d_lower = d_lower_flat;
+    result.d_upper = d_upper_flat;
+    result.bias_lower = bias_lower_flat;
+    result.bias_upper = bias_upper_flat;
+
+    // For per-spec tensors (if defined from a previous alpha pass that was skipped)
+    if (result.lb_lower_d.defined() && result.lb_lower_d.dim() == 2) {
+        int specDim = result.lb_lower_d.size(0);
+        auto always_active_expanded = always_active_mask.unsqueeze(0).expand({specDim, outDim});
+        auto always_inactive_expanded = always_inactive_mask.unsqueeze(0).expand({specDim, outDim});
+
+        result.lb_lower_d = torch::where(always_active_expanded,
+                                         torch::ones_like(result.lb_lower_d),
+                                         result.lb_lower_d);
+        result.lb_lower_d = torch::where(always_inactive_expanded,
+                                         torch::zeros_like(result.lb_lower_d),
+                                         result.lb_lower_d);
     }
+    if (result.lb_upper_d.defined() && result.lb_upper_d.dim() == 2) {
+        int specDim = result.lb_upper_d.size(0);
+        auto always_active_expanded = always_active_mask.unsqueeze(0).expand({specDim, outDim});
+        auto always_inactive_expanded = always_inactive_mask.unsqueeze(0).expand({specDim, outDim});
 
-    // Apply masking for stable neurons (always active/inactive)
-    auto always_active_mask = input_lower >= 0;
-    auto always_inactive_mask = input_upper <= 0;
-
-    result.d_lower = torch::where(always_active_mask, torch::ones_like(result.d_lower), result.d_lower);
-    result.d_lower = torch::where(always_inactive_mask, torch::zeros_like(result.d_lower), result.d_lower);
-    result.bias_lower = torch::where(always_active_mask | always_inactive_mask,
-                                   torch::zeros_like(result.bias_lower), result.bias_lower);
-
-    result.d_upper = torch::where(always_active_mask, torch::ones_like(result.d_upper), result.d_upper);
-    result.d_upper = torch::where(always_inactive_mask, torch::zeros_like(result.d_upper), result.d_upper);
-    result.bias_upper = torch::where(always_active_mask | always_inactive_mask,
-                                   torch::zeros_like(result.bias_upper), result.bias_upper);
-
-    // Also override lb_lower_d and lb_upper_d for stable neurons
-    if (result.lb_lower_d.defined()) {
-        result.lb_lower_d = torch::where(always_active_mask, torch::ones_like(result.lb_lower_d), result.lb_lower_d);
-        result.lb_lower_d = torch::where(always_inactive_mask, torch::zeros_like(result.lb_lower_d), result.lb_lower_d);
-    }
-    if (result.lb_upper_d.defined()) {
-        result.lb_upper_d = torch::where(always_active_mask, torch::ones_like(result.lb_upper_d), result.lb_upper_d);
-        result.lb_upper_d = torch::where(always_inactive_mask, torch::zeros_like(result.lb_upper_d), result.lb_upper_d);
+        result.lb_upper_d = torch::where(always_active_expanded,
+                                         torch::ones_like(result.lb_upper_d),
+                                         result.lb_upper_d);
+        result.lb_upper_d = torch::where(always_inactive_expanded,
+                                         torch::zeros_like(result.lb_upper_d),
+                                         result.lb_upper_d);
     }
 }
 

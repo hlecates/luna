@@ -135,10 +135,6 @@ void CROWNAnalysis::run(bool enableGradients)
     log("run() - Starting");
     // Conditionally enable/disable gradient tracking
     // For Alpha-CROWN optimization, gradients must be enabled to flow through bounds computation
-    std::unique_ptr<torch::NoGradGuard> no_grad;
-    if (!enableGradients) {
-        no_grad = std::make_unique<torch::NoGradGuard>(); // Disable gradient tracking for better performance
-    }
     std::string stage = "start";
     try {
         // Reset per-run debug state.
@@ -151,7 +147,7 @@ void CROWNAnalysis::run(bool enableGradients)
         // to avoid in-place modification conflicts during multiple backward passes.
         // The standard CROWN mode with multiple backward passes causes issues with PyTorch's autograd
         // when the same alpha tensors are accessed from different computation graphs.
-        bool useStandardCrown = LunaConfiguration::USE_STANDARD_CROWN && !enableGradients;
+        bool useStandardCrown = LunaConfiguration::USE_STANDARD_CROWN;
         
         if (useStandardCrown) {
             // Standard CROWN: Selective backward passes for ReLU layers
@@ -1147,8 +1143,12 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
                     
                     // Use index_put (non-in-place) instead of index_put_ to avoid breaking gradients
                     // index_put returns a new tensor, so we need to assign it back
-                    fullLowerFlat = fullLowerFlat.index_put({indices}, concreteLowerFlat);
-                    fullUpperFlat = fullUpperFlat.index_put({indices}, concreteUpperFlat);
+                    // IMPORTANT: Detach the concrete bounds to prevent IndexPutBackward0 from retaining
+                    // computation graph references across iterations. The concrete bounds may have
+                    // requires_grad=true from CROWN computations, but we don't need gradients
+                    // to flow through the scattered bounds storage.
+                    fullLowerFlat = fullLowerFlat.index_put({indices}, concreteLowerFlat.detach());
+                    fullUpperFlat = fullUpperFlat.index_put({indices}, concreteUpperFlat.detach());
                     
                     // Reshape back
                     concreteLower = fullLowerFlat.reshape(originalShape);

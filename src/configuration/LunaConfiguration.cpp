@@ -15,7 +15,7 @@ LunaConfiguration::AnalysisMethod LunaConfiguration::ANALYSIS_METHOD =
     LunaConfiguration::AnalysisMethod::CROWN;
 bool LunaConfiguration::COMPUTE_LOWER = true;
 bool LunaConfiguration::COMPUTE_UPPER = true;
-bool LunaConfiguration::VERBOSE = true;
+bool LunaConfiguration::VERBOSE = false;
 
 // Alpha-CROWN settings
 unsigned LunaConfiguration::ALPHA_ITERATIONS = 20;
@@ -54,7 +54,7 @@ torch::Device LunaConfiguration::DEVICE =
 // Utility constants (replacing GlobalConfiguration constants)
 const double LunaConfiguration::DEFAULT_EPSILON_FOR_COMPARISONS = 0.0000000001;
 const unsigned LunaConfiguration::DEFAULT_DOUBLE_TO_STRING_PRECISION = 10;
-bool LunaConfiguration::NETWORK_LEVEL_REASONER_LOGGING = true;
+bool LunaConfiguration::NETWORK_LEVEL_REASONER_LOGGING = false;
 const double LunaConfiguration::SIGMOID_CUTOFF_CONSTANT = 20.0;
 
 // Helper methods for string conversion
@@ -110,7 +110,7 @@ void LunaConfiguration::resetToDefaults()
     ANALYSIS_METHOD = AnalysisMethod::CROWN;
     COMPUTE_LOWER = true;
     COMPUTE_UPPER = true;
-    VERBOSE = true;
+    VERBOSE = false;
 
     // Alpha-CROWN settings
     ALPHA_ITERATIONS = 20;
@@ -145,7 +145,7 @@ void LunaConfiguration::resetToDefaults()
     
     // Utility constants are const, so they don't need resetting
     // NETWORK_LEVEL_REASONER_LOGGING can be reset if needed
-    NETWORK_LEVEL_REASONER_LOGGING = true;
+    NETWORK_LEVEL_REASONER_LOGGING = false;
 }
 
 void LunaConfiguration::print()

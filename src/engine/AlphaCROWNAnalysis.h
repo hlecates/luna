@@ -25,10 +25,13 @@ class TorchModel;
 // Structure to hold alpha parameters for a single layer and start
 // similar to auto_LiRPA's alpha tensor format
 struct AlphaParameters {
-    torch::Tensor alpha;        // Shape: [2, spec_dim, batch_size, output_size]
+    torch::Tensor alpha;        // Shape: [spec_dim, 1, num_unstable] - only unstable neurons
+    torch::Tensor unstableMask; // Shape: [outDim] - bool mask indicating unstable neurons
+    torch::Tensor unstableIndices; // Shape: [num_unstable] - indices of unstable neurons
     int specDim{0};             // Number of specifications being verified
     int batchDim{1};            // Batch dimension (typically 1)
-    int outDim{0};              // Number of neurons in the layer
+    int outDim{0};              // Total number of neurons in the layer
+    int numUnstable{0};         // Number of unstable neurons (alpha.size(-1))
     bool requiresGrad{true};    // Whether gradients are enabled
 };
 
@@ -43,9 +46,18 @@ public:
 
     torch::Tensor getAlphaForNode(unsigned nodeIndex, bool isLowerBound, unsigned specIndex = 0, unsigned batchIndex = 0) const;
 
+    // Result structure for getAlphaForNodeAllSpecs
+    struct AlphaResult {
+        torch::Tensor alpha;          // [spec, numUnstable] - alpha values for unstable neurons only
+        torch::Tensor unstableMask;   // [outDim] - bool mask of unstable neurons
+        torch::Tensor unstableIndices;// [numUnstable] - indices of unstable neurons
+        int numUnstable{0};           // Number of unstable neurons
+        int outDim{0};                // Total number of neurons
+    };
+
     // Fetch alpha slice for ALL specs at once for a specific start.
-    // Returns [spec, out] tensor for use at multiply time
-    torch::Tensor getAlphaForNodeAllSpecs(
+    // Returns AlphaResult with alpha [spec, numUnstable] and mapping info
+    AlphaResult getAlphaForNodeAllSpecs(
         unsigned nodeIndex,
         bool isLower,
         const std::string& startKey,

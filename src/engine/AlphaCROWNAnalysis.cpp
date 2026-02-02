@@ -251,6 +251,7 @@ void AlphaCROWNAnalysis::initializeAlphaWithCROWNSlopes(torch::Tensor& alpha, st
 }
 
 // Ensure alpha exists for (node, start) pair with correct shape and initialization
+// FIXED: Only create alpha for unstable neurons (matching auto-LiRPA approach)
 AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
     unsigned nodeIndex,
     const std::string& startKey,
@@ -259,31 +260,57 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
     const torch::Tensor& input_ub)
 {
     // Determine if this is for lower or upper bound based on current optimization stage
-    // This is a simplified approach - in dual optimization, this will be called separately for each bound
     bool isLower = (LunaConfiguration::BOUND_SIDE == LunaConfiguration::BoundSide::Lower);
-
-    // printf("[DEBUG] ensureAlphaFor node=%u, startKey=%s, bound_side=%s\n",
-    //        nodeIndex, startKey.c_str(), isLower ? "LOWER" : "UPPER");
 
     // Choose the appropriate storage based on bound side
     auto& perStart = isLower ? _alphaByNodeStartLower[nodeIndex] : _alphaByNodeStartUpper[nodeIndex];
     auto it = perStart.find(startKey);
 
+    // Compute unstable mask: neurons where lb < 0 AND ub > 0
+    // IMPORTANT: Detach input bounds to prevent computation graph from being retained
+    // across iterations. The input bounds come from CROWN computations which may have
+    // gradient tracking. If we don't detach, the unstableMask and unstableIndices
+    // would be part of the computation graph, causing "backward through graph a second time"
+    // errors when these indices are reused in subsequent iterations.
+    auto input_lb_flat = input_lb.detach().flatten();
+    auto input_ub_flat = input_ub.detach().flatten();
+    torch::Tensor unstableMask = (input_lb_flat < 0) & (input_ub_flat > 0);
+    int numUnstable = unstableMask.sum().item<int>();
+
     bool need_new = (it == perStart.end());
     if (!need_new) {
-        const auto& a = it->second.alpha;
-        // Updated shape check: now [specDim, 1, outDim] instead of [2, specDim, 1, outDim]
-        if (a.size(0) != specDim || a.size(2) != outDim) {
+        const auto& ap = it->second;
+        // Check if shape matches: [specDim, 1, numUnstable]
+        if (ap.alpha.size(0) != specDim || ap.numUnstable != numUnstable) {
             need_new = true;
         }
     }
 
     if (need_new) {
-        // Create alpha tensor WITH its own storage to avoid any shared storage issues
-        // Shape: [specDim, 1, outDim] (no leading "2" dimension)
-        auto options = input_lb.options().dtype(torch::kFloat32);
+        // Use options without gradient tracking for creating intermediate tensors
+        auto options = input_lb.options().dtype(torch::kFloat32).requires_grad(false);
 
-        // Initialize alpha based on bound side
+        AlphaParameters params;
+        params.specDim = specDim;
+        params.outDim = outDim;
+        params.numUnstable = numUnstable;
+        // Detach the mask to ensure no gradient tracking (should already be detached since
+        // it's computed from detached input bounds, but be explicit)
+        params.unstableMask = unstableMask.detach().clone();
+
+        if (numUnstable == 0) {
+            // No unstable neurons - create empty alpha tensor
+            params.alpha = torch::empty({specDim, 1, 0}, options);
+            params.unstableIndices = torch::empty({0}, torch::kLong);
+            perStart[startKey] = std::move(params);
+            return perStart[startKey];
+        }
+
+        // Get indices of unstable neurons
+        // Use detach() to ensure no computation graph references are retained
+        params.unstableIndices = torch::nonzero(unstableMask).flatten().to(torch::kLong).detach();
+
+        // Initialize alpha based on CROWN slopes (only for unstable neurons)
         torch::Tensor slope_init;
         {
             // Find the node by index and read its CROWN slope
@@ -295,39 +322,32 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
                 }
             }
             if (nodePtr) {
-                // Both lower and upper bounds: use CROWN lower-face choice (0 or 1) as initialization
-                // This matches auto-LiRPA's approach where both alpha slices start from CROWN initialization
-                slope_init = nodePtr->getCROWNSlope(true);  // [out], entries 0 or 1
+                // Get CROWN lower-face choice (0 or 1) as initialization
+                torch::Tensor full_slope = nodePtr->getCROWNSlope(true);  // [outDim], entries 0 or 1
+                // Extract only unstable neuron slopes using index_select
+                slope_init = full_slope.flatten().index_select(0, params.unstableIndices);  // [numUnstable]
             } else {
-                // Safe fallback
-                auto always_active = input_lb.ge(0);
-                auto always_inactive = input_ub.le(0);
-                (void)always_inactive;
-                slope_init = torch::where(always_active, torch::ones_like(input_lb), torch::zeros_like(input_lb));
+                // Safe fallback: use 0.5 for unstable neurons (midpoint of valid range)
+                slope_init = torch::full({numUnstable}, 0.5f, options);
             }
         }
 
-        // CRITICAL FIX: Use contiguous().clone() to ensure completely independent storage
-        // The expand() operation creates a view that shares storage, and detach() also shares storage.
-        // By using clone() after expand(), we get a tensor with its own independent storage.
-        // This prevents in-place modification errors when the autograd graph is built.
-        // NOTE: Use set_requires_grad(true) instead of requires_grad_(true) to avoid in-place modification
-        torch::Tensor alpha = slope_init.view({1, 1, outDim})
-                                        .expand({specDim, 1, outDim})
-                                        .contiguous()  // Materialize the expanded view
-                                        .clone()       // Create independent storage
+        // Create alpha tensor only for unstable neurons
+        // Shape: [specDim, 1, numUnstable]
+        torch::Tensor alpha = slope_init.view({1, 1, numUnstable})
+                                        .expand({specDim, 1, numUnstable})
+                                        .contiguous()
+                                        .clone()
                                         .to(options.dtype());
-        
-        // Ensure alpha is in valid range [0, 1] before enabling gradients
-        // This is important for unstable neurons where alpha should be between 0 and 1
-        alpha = torch::clamp(alpha, 0.0f, 1.0f);
-        
-        alpha.set_requires_grad(true);  // Non-in-place way to enable gradients
 
-        AlphaParameters params;
+        // Ensure alpha is in valid range [0, 1]
+        // IMPORTANT: Use detach() after clamp to make alpha a proper leaf tensor
+        // Without detach(), the clamp operation creates a non-leaf tensor with a computation graph,
+        // which can cause "modified by inplace operation" errors when the tensor is updated by optimizer
+        alpha = torch::clamp(alpha, 0.0f, 1.0f).detach();
+        alpha.set_requires_grad(true);
+
         params.alpha = alpha;
-        params.specDim = specDim;
-        params.outDim = outDim;
         perStart[startKey] = std::move(params);
     }
     return perStart[startKey];
@@ -408,37 +428,17 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
         auto& storageMap = isLower ? _alphaByNodeStartLower : _alphaByNodeStartUpper;
         for (auto& [nodeIdx, perStart] : storageMap) {
             for (auto& [startKey, ap] : perStart) {
-                if (ap.alpha.defined()) {
+                if (ap.alpha.defined() && ap.alpha.numel() > 0) {
                     log(Stringf("computeOptimizedBounds() - Node %u [%s]: alpha shape=[%lld,%lld,%lld], "
                                 "min=%.6f, max=%.6f, mean=%.6f, requires_grad=%d",
                                 nodeIdx, startKey.c_str(),
                                 (long long)ap.alpha.size(0), (long long)ap.alpha.size(1), (long long)ap.alpha.size(2),
-                                ap.alpha.min().item<float>(), ap.alpha.max().item<float>(), 
+                                ap.alpha.min().item<float>(), ap.alpha.max().item<float>(),
                                 ap.alpha.mean().item<float>(), ap.alpha.requires_grad()));
                 }
             }
         }
     }
-
-    // DEBUG: Print initial alpha values and dtypes (disabled for clean output)
-    // if (!alphaParams.empty()) {
-    //     printf("[DEBUG Alpha Init] Alpha parameter diagnostics:\n");
-    //     auto& storageMap = isLower ? _alphaByNodeStartLower : _alphaByNodeStartUpper;
-    //     for (auto& [nodeIdx, perStart] : storageMap) {
-    //         for (auto& [startKey, ap] : perStart) {
-    //             if (ap.alpha.defined()) {
-    //                 printf("  Node %u [%s]: shape=[%lld,%lld,%lld], dtype=%s, requires_grad=%d, min=%.6f, max=%.6f, mean=%.6f\n",
-    //                        nodeIdx, startKey.c_str(),
-    //                        (long long)ap.alpha.size(0), (long long)ap.alpha.size(1), (long long)ap.alpha.size(2),
-    //                        torch::toString(ap.alpha.dtype()).c_str(),
-    //                        ap.alpha.requires_grad(),
-    //                        ap.alpha.min().item<float>(),
-    //                        ap.alpha.max().item<float>(),
-    //                        ap.alpha.mean().item<float>());
-    //             }
-    //         }
-    //     }
-    // }
 
     if (alphaParams.empty()) {
         log("computeOptimizedBounds() - No alpha parameters found, returning CROWN bounds");
@@ -616,7 +616,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
             auto& storageMap = isLower ? _alphaByNodeStartLower : _alphaByNodeStartUpper;
             for (auto& [nodeIdx, perStart] : storageMap) {
                 for (auto& [startKey, ap] : perStart) {
-                    if (ap.alpha.defined() && iter == 0) {  // Log only first iteration to avoid spam
+                    if (ap.alpha.defined() && ap.alpha.numel() > 0 && iter == 0) {  // Log only first iteration to avoid spam
                         log(Stringf("computeOptimizedBounds() - Iter %u: Node %u [%s] alpha after update: "
                                     "min=%.6f, max=%.6f, mean=%.6f",
                                     iter + 1, nodeIdx, startKey.c_str(),
@@ -1493,8 +1493,8 @@ torch::Tensor AlphaCROWNAnalysis::getAlphaForNode(unsigned nodeIndex, bool isLow
 }
 
 // Fetch alpha slice for ALL specs at once for a specific start.
-// Returns [spec, out] tensor for use at multiply time
-torch::Tensor AlphaCROWNAnalysis::getAlphaForNodeAllSpecs(
+// Returns AlphaResult with alpha [spec, numUnstable] and mapping info
+AlphaCROWNAnalysis::AlphaResult AlphaCROWNAnalysis::getAlphaForNodeAllSpecs(
     unsigned nodeIndex,
     bool isLower,
     const std::string& startKey,
@@ -1505,20 +1505,21 @@ torch::Tensor AlphaCROWNAnalysis::getAlphaForNodeAllSpecs(
 {
     (void)isLower; // Unused - we use LunaConfiguration::BOUND_SIDE instead in dual-sided optimization
 
-    // In dual-sided optimization, we use LunaConfiguration::BOUND_SIDE to determine which alpha storage to use
-    // The isLower parameter indicates which bound is being computed, but we always use alphas
-    // from the current optimization side (stored in LunaConfiguration::BOUND_SIDE)
-    // This ensures that during upper bound optimization, we use upper alphas even when computing lower bounds
-
     // Ensure per-(node,start) α exists with correct shape & initialization
     // This will use LunaConfiguration::BOUND_SIDE (set by the optimization loop) to choose the correct storage
     auto& ap = ensureAlphaFor(nodeIndex, startKey, specDim, outDim, input_lb, input_ub);
 
-    // ap.alpha: [spec, 1, out] -> drop batch dimension
-    // IMPORTANT: Return a squeezed view rather than select() to maintain gradient connection
-    // The squeeze operation creates a tensor that can still track gradients back to ap.alpha
-    // Use squeeze(1) instead of select(1,0) to avoid creating a strided view
-    return ap.alpha.squeeze(1); // [spec, out]
+    AlphaResult result;
+    result.numUnstable = ap.numUnstable;
+    result.outDim = ap.outDim;
+    result.unstableMask = ap.unstableMask;
+    result.unstableIndices = ap.unstableIndices;
+
+    // ap.alpha: [spec, 1, numUnstable] -> drop batch dimension
+    // Use squeeze(1) to maintain gradient connection
+    result.alpha = ap.alpha.squeeze(1); // [spec, numUnstable]
+
+    return result;
 }
 
 torch::Tensor AlphaCROWNAnalysis::getAllAlphaParameters() const
@@ -1578,26 +1579,26 @@ void AlphaCROWNAnalysis::clipAlphaParameters()
 
     // Following auto_LiRPA pattern: clamp ALL alpha values to [0,1] regardless of optimization side
     // This prevents numerical instability for all bounds
-    
-    // IMPORTANT: Use NoGradGuard and set_data to avoid in-place operations that break the computation graph
-    // We're modifying parameters after optimizer step, so gradients don't need to flow through this
+
+    // IMPORTANT: Use NoGradGuard and .data().clamp_() to modify in-place without breaking autograd
+    // Using set_data() or creating new tensors can cause version mismatch errors when views
+    // of these tensors are used in the computation graph (e.g., via squeeze() in getAlphaForNodeAllSpecs)
     torch::NoGradGuard no_grad;
 
     // Clip lower bound alpha parameters
     for (auto& [nodeIdx, perStart] : _alphaByNodeStartLower) {
         for (auto& [startKey, ap] : perStart) {
-            // Use non-in-place clamp and set_data to replace the tensor without breaking computation graph
-            torch::Tensor clamped = torch::clamp(ap.alpha.detach(), 0.0f, 1.0f);
-            ap.alpha.set_data(clamped.requires_grad_(true));
+            // Use .data().clamp_() to directly modify underlying data without autograd tracking
+            // This avoids version mismatch issues with views created during forward pass
+            ap.alpha.data().clamp_(0.0f, 1.0f);
         }
     }
 
     // Clip upper bound alpha parameters
     for (auto& [nodeIdx, perStart] : _alphaByNodeStartUpper) {
         for (auto& [startKey, ap] : perStart) {
-            // Use non-in-place clamp and set_data to replace the tensor without breaking computation graph
-            torch::Tensor clamped = torch::clamp(ap.alpha.detach(), 0.0f, 1.0f);
-            ap.alpha.set_data(clamped.requires_grad_(true));
+            // Use .data().clamp_() to directly modify underlying data without autograd tracking
+            ap.alpha.data().clamp_(0.0f, 1.0f);
         }
     }
 
