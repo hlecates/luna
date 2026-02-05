@@ -33,6 +33,7 @@ struct AlphaParameters {
     int outDim{0};              // Total number of neurons in the layer
     int numUnstable{0};         // Number of unstable neurons (alpha.size(-1))
     bool requiresGrad{true};    // Whether gradients are enabled
+    bool hasSpecDefaultSlot{false}; // Sparse-spec alpha includes default slot
 };
 
 class AlphaCROWNAnalysis
@@ -53,6 +54,7 @@ public:
         torch::Tensor unstableIndices;// [numUnstable] - indices of unstable neurons
         int numUnstable{0};           // Number of unstable neurons
         int outDim{0};                // Total number of neurons
+        bool hasSpecDefaultSlot{false}; // Alpha includes default spec slot
     };
 
     // Fetch alpha slice for ALL specs at once for a specific start.

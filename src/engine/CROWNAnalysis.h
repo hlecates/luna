@@ -14,6 +14,7 @@
 
 #include <torch/torch.h>
 #include <memory>
+#include <unordered_map>
 
 namespace NLR {
 
@@ -21,6 +22,14 @@ namespace NLR {
 struct CrownStartContext {
     std::string start_key; // e.g. "/input-3", "/input-7", "/15"
     int spec_dim{1};
+};
+
+// Cached start-node spec info for alpha-CROWN
+struct AlphaStartCache {
+    Vector<unsigned> unstableIndices;
+    bool sparseMode{false};
+    unsigned nodeSize{0};
+    bool initialized{false};
 };
 
 class CROWNAnalysis
@@ -114,6 +123,7 @@ public:
     const CrownStartContext& currentStart() const { return _cur; }
     const std::string& currentStartKey() const { return _currentStartKey; }
     int currentStartSpecDim() const { return _currentStartSpecDim; }
+    const Vector<unsigned>& currentStartSpecIndices() const { return _currentStartSpecIndices; }
 
     void _setCurrentStart(const std::string& key, int specDim) {
         _cur.start_key = key;
@@ -121,6 +131,14 @@ public:
         _currentStartKey = key;
         _currentStartSpecDim = specDim;
     }
+
+    // Alpha-CROWN: cache start-node unstable sets from init/reference bounds
+    void setAlphaStartCacheEnabled(bool enabled) { _alphaStartCacheEnabled = enabled; }
+    void clearAlphaStartCache() { _alphaStartCache.clear(); }
+    bool getAlphaStartCacheInfo(const std::string& key,
+                                Vector<unsigned>& unstableIndices,
+                                bool& sparseMode,
+                                unsigned& nodeSize) const;
 
     // Concretize bounds for a specific node index
     void concretizeNode(unsigned startIndex, const Vector<unsigned>& unstableIndices = {});
@@ -163,6 +181,11 @@ private:
     // Track first unsound node (center not contained in concretized bounds).
     bool _foundFirstUnsound{false};
     unsigned _firstUnsoundNode{0};
+
+    // Alpha-CROWN: cache unstable indices per start node (fixed at init)
+    std::unordered_map<std::string, AlphaStartCache> _alphaStartCache;
+    bool _alphaStartCacheEnabled{false};
+    Vector<unsigned> _currentStartSpecIndices;
 
     // Concretize Bounds
     void computeConcreteBounds(const torch::Tensor& lA, const torch::Tensor& uA,

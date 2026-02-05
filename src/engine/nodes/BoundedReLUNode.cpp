@@ -539,6 +539,15 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
         }
 
         int specDim = _currentSpecDim;
+        Vector<unsigned> currentSpecIndices;
+        bool hasSpecLookup = false;
+        Vector<unsigned> cachedSpecIndices;
+        bool cachedSparseMode = false;
+        unsigned cachedNodeSize = 0;
+        if (crown) {
+            currentSpecIndices = crown->currentStartSpecIndices();
+            hasSpecLookup = crown->getAlphaStartCacheInfo(startKey, cachedSpecIndices, cachedSparseMode, cachedNodeSize);
+        }
 
         // Get alpha result (now returns AlphaResult with unstable-only alpha)
         auto alphaResult = _alphaCrownAnalysis->getAlphaForNodeAllSpecs(
@@ -562,13 +571,43 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
             // 2. "backward through graph a second time" errors (if we reuse graph nodes)
             // The clone() operation preserves gradient flow - gradients from the clone
             // will flow back to the original alpha parameter during backward().
-            auto alpha_unstable = alphaResult.alpha.clone(); // [spec, numUnstable]
+            auto alpha_unstable = alphaResult.alpha.clone(); // [spec or spec+1, numUnstable]
+
+            // If alpha has a default spec slot, map current spec indices into compact alpha spec indices.
+            if (alphaResult.hasSpecDefaultSlot && hasSpecLookup && cachedSparseMode && cachedNodeSize > 0) {
+                // Build lookup: size [nodeSize], default 0
+                auto lookup = torch::zeros({(long long)cachedNodeSize},
+                                           torch::TensorOptions().dtype(torch::kLong).device(alpha_unstable.device()));
+                for (int i = 0; i < (int)cachedSpecIndices.size(); ++i) {
+                    unsigned idx = cachedSpecIndices[i];
+                    if (idx < cachedNodeSize) {
+                        lookup[idx] = i + 1; // 1..k, 0 is default slot
+                    }
+                }
+
+                // Map current spec indices (if available) into compact indices
+                if (currentSpecIndices.size() > 0) {
+                    auto idxTensor = torch::empty({(long long)currentSpecIndices.size()},
+                                                  torch::TensorOptions().dtype(torch::kLong).device(alpha_unstable.device()));
+                    for (int i = 0; i < (int)currentSpecIndices.size(); ++i) {
+                        unsigned idx = currentSpecIndices[i];
+                        idxTensor[i] = (idx < cachedNodeSize)
+                            ? static_cast<int64_t>(lookup[idx].item<int64_t>())
+                            : static_cast<int64_t>(0);
+                    }
+                    alpha_unstable = alpha_unstable.index_select(0, idxTensor);
+                    specDim = (int)alpha_unstable.size(0);
+                }
+            }
 
             // Create full alpha tensor [spec, outDim] using functional operations only.
             // IMPORTANT: Avoid in-place operations (index_put_, scatter_) which create
             // IndexPutBackward0 nodes that can cause "backward through graph a second time"
             // errors when tensors are reused across optimization iterations.
             auto options = alpha_unstable.options();
+
+            int alphaSpecDim = (int)(alpha_unstable.defined() ? alpha_unstable.size(0) : specDim);
+            specDim = alphaSpecDim;
 
             // Expand masks to [spec, outDim] for broadcasting
             auto always_active_expanded = always_active_mask.unsqueeze(0).expand({specDim, outDim});
@@ -609,6 +648,8 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
                                                b_upper);
             result.bias_lower = torch::zeros_like(input_lb_flat); // for Apos (alpha) branch
             result.bias_upper = b_upper_masked;                    // for Aneg (secant) branch
+
+
 
             // Skip the standard masking below since we've already set everything
             return;

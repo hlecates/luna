@@ -261,8 +261,18 @@ void CROWNAnalysis::run(bool enableGradients)
                 // Identify unstable neurons for this node using IBP bounds
                 Vector<unsigned> unstableIndices;
                 bool sparseMode = false;
+                bool usedCache = false;
+
+                if (_alphaStartCacheEnabled) {
+                    auto itCache = _alphaStartCache.find(startKey);
+                    if (itCache != _alphaStartCache.end() && itCache->second.initialized) {
+                        unstableIndices = itCache->second.unstableIndices;
+                        sparseMode = itCache->second.sparseMode;
+                        usedCache = true;
+                    }
+                }
                 
-                if (_ibpBounds.exists(targetNode)) {
+                if (!usedCache && _ibpBounds.exists(targetNode)) {
                     auto bounds = _ibpBounds[targetNode];
                     torch::Tensor lower = bounds.lower();
                     torch::Tensor upper = bounds.upper();
@@ -303,7 +313,17 @@ void CROWNAnalysis::run(bool enableGradients)
                     }
                 }
 
+                if (_alphaStartCacheEnabled && !usedCache) {
+                    AlphaStartCache cache;
+                    cache.unstableIndices = unstableIndices;
+                    cache.sparseMode = sparseMode;
+                    cache.nodeSize = nodeSize;
+                    cache.initialized = true;
+                    _alphaStartCache[startKey] = std::move(cache);
+                }
+
                 _setCurrentStart(startKey, sparseMode ? unstableIndices.size() : nodeSize);
+                _currentStartSpecIndices = unstableIndices;
 
                 // Perform backward pass from this specific node
                 stage = std::string("backwardFrom(targetNode=") + std::to_string(targetNode) + ")";
@@ -329,6 +349,7 @@ void CROWNAnalysis::run(bool enableGradients)
             unsigned outputSize = outputNode->getOutputSize();
             std::string startKey = "/" + std::to_string(outputIndex);
             _setCurrentStart(startKey, outputSize);
+            _currentStartSpecIndices.clear();
 
             stage = std::string("backwardFrom(outputIndex=") + std::to_string(outputIndex) + ")";
             backwardFrom(outputIndex);
@@ -396,6 +417,21 @@ void CROWNAnalysis::computeIBPBounds()
     }
 
     log(Stringf("computeIBPBounds() - Completed, stored bounds for %u nodes", _ibpBounds.size()));
+}
+
+bool CROWNAnalysis::getAlphaStartCacheInfo(const std::string& key,
+                                           Vector<unsigned>& unstableIndices,
+                                           bool& sparseMode,
+                                           unsigned& nodeSize) const
+{
+    auto it = _alphaStartCache.find(key);
+    if (it == _alphaStartCache.end() || !it->second.initialized) {
+        return false;
+    }
+    unstableIndices = it->second.unstableIndices;
+    sparseMode = it->second.sparseMode;
+    nodeSize = it->second.nodeSize;
+    return true;
 }
 
 // Global counter for backward passes
@@ -751,6 +787,14 @@ void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& un
                         // If 2D, check if dimensions match A matrix to infer correct order
                         if (bias.dim() == 2) {
                             if (A_spec > 0 && A_batch > 0) {
+                                // If bias is [spec,1] but batch>1, expand to [spec,batch]
+                                if (bias.size(0) == A_spec && bias.size(1) == 1 && A_batch > 1) {
+                                    return bias.expand({A_spec, A_batch});
+                                }
+                                // If bias is [1,batch] but spec>1, expand to [spec,batch]
+                                if (bias.size(1) == A_batch && bias.size(0) == 1 && A_spec > 1) {
+                                    return bias.expand({A_spec, A_batch});
+                                }
                                 // Check if bias dimensions match A dimensions (in either order)
                                 if (bias.size(0) == A_spec && bias.size(1) == A_batch) {
                                     // Already correct: [spec, batch]
@@ -1143,12 +1187,20 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
                     
                     // Use index_put (non-in-place) instead of index_put_ to avoid breaking gradients
                     // index_put returns a new tensor, so we need to assign it back
-                    // IMPORTANT: Detach the concrete bounds to prevent IndexPutBackward0 from retaining
-                    // computation graph references across iterations. The concrete bounds may have
-                    // requires_grad=true from CROWN computations, but we don't need gradients
-                    // to flow through the scattered bounds storage.
-                    fullLowerFlat = fullLowerFlat.index_put({indices}, concreteLowerFlat.detach());
-                    fullUpperFlat = fullUpperFlat.index_put({indices}, concreteUpperFlat.detach());
+                    //
+                    // IMPORTANT:
+                    // - In alpha-CROWN, we MUST preserve gradients through sparse concretization
+                    //   so intermediate bounds can influence alpha updates.
+                    // - In non-alpha modes, detach to avoid retaining graphs across runs.
+                    bool retainSparseGrad =
+                        (LunaConfiguration::ANALYSIS_METHOD == LunaConfiguration::AnalysisMethod::AlphaCROWN);
+                    if (retainSparseGrad) {
+                        fullLowerFlat = fullLowerFlat.index_put({indices}, concreteLowerFlat);
+                        fullUpperFlat = fullUpperFlat.index_put({indices}, concreteUpperFlat);
+                    } else {
+                        fullLowerFlat = fullLowerFlat.index_put({indices}, concreteLowerFlat.detach());
+                        fullUpperFlat = fullUpperFlat.index_put({indices}, concreteUpperFlat.detach());
+                    }
                     
                     // Reshape back
                     concreteLower = fullLowerFlat.reshape(originalShape);

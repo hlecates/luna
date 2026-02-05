@@ -237,3 +237,5 @@ run_benchmark_comparison.py
 dump_onnx.py
 
 test_acas_auto.py
+
+auto_LiRPA/
