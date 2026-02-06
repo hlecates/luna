@@ -23,7 +23,6 @@ class TorchModel;
 // Use LunaConfiguration::BoundSide and LunaConfiguration static members
 
 // Structure to hold alpha parameters for a single layer and start
-// similar to auto_LiRPA's alpha tensor format
 struct AlphaParameters {
     torch::Tensor alpha;        // Shape: [spec_dim, 1, num_unstable] - only unstable neurons
     torch::Tensor unstableMask; // Shape: [outDim] - bool mask indicating unstable neurons

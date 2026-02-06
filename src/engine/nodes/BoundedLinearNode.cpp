@@ -219,7 +219,7 @@ void BoundedLinearNode::boundBackward(
         oss << "], weight shape: [" << weight.size(0) << ", " << weight.size(1) << "]";
         throw std::runtime_error(oss.str());
     }
-    
+
     outputA_matrices.append(Pair<BoundA, BoundA>(BoundA(lA), BoundA(uA)));
     
     // Compute bias contribution: A @ bias = (A * bias).sum(-1) via broadcasting
@@ -240,6 +240,7 @@ void BoundedLinearNode::boundBackward(
         }
         // For 3D [spec, batch, features] -> sum -> [spec, batch], already correct
     }
+
 }
 
 BoundedTensor<torch::Tensor> BoundedLinearNode::computeIntervalBoundPropagation(

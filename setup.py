@@ -80,11 +80,11 @@ else:
 setup(
     name='lunapy',
     version='1.0.0',
-    author='LUNA Team',
+    author='Henry LeCates',
     description='Python bindings for LUNA neural network bound propagation',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/yourusername/luna',
+    url='https://github.com/hlecates/luna',
     packages=['lunapy'],
     ext_modules=[CMakeExtension('lunapy.LunaPyCore')],
     cmdclass={'build_ext': CMakeBuild},

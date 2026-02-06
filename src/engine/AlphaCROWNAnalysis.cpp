@@ -279,11 +279,23 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
     bool need_new = (it == perStart.end());
     if (!need_new) {
         const auto& ap = it->second;
-        if (ap.alpha.defined() &&
-            (ap.alpha.size(0) != specDim || ap.numUnstable != numUnstable)) {
-            // Keep existing alpha; no recreation in this mode.
+        bool spec_mismatch = false;
+        if (ap.alpha.defined()) {
+            const auto storedSpecDim = (int)ap.alpha.size(0);
+            // Treat storedSpecDim == specDim + 1 as compatible when default slot is used.
+            spec_mismatch = (storedSpecDim != specDim)
+                && !(ap.hasSpecDefaultSlot && storedSpecDim == specDim + 1);
         }
-        return it->second;
+        bool unstable_mismatch = (ap.numUnstable != numUnstable);
+        if (spec_mismatch) {
+            // Spec dimension mismatch requires re-creation.
+            perStart.erase(it);
+            need_new = true;
+        } else {
+            // Keep existing alpha even if numUnstable changes to avoid shape churn
+            // during optimization (closer to auto_LiRPA's fixed alpha indices).
+            return it->second;
+        }
     }
 
     if (need_new) {
@@ -312,6 +324,7 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
 
         // Initialize alpha based on CROWN slopes (only for unstable neurons)
         torch::Tensor slope_init;
+        torch::Tensor full_slope_debug;
         {
             // Find the node by index and read its CROWN slope
             std::shared_ptr<BoundedAlphaOptimizeNode> nodePtr;
@@ -324,6 +337,7 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
             if (nodePtr) {
                 // Get CROWN lower-face choice (0 or 1) as initialization
                 torch::Tensor full_slope = nodePtr->getCROWNSlope(true);  // [outDim], entries 0 or 1
+                full_slope_debug = full_slope;
                 // Extract only unstable neuron slopes using index_select
                 slope_init = full_slope.flatten().index_select(0, params.unstableIndices);  // [numUnstable]
             } else {
@@ -428,7 +442,6 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
         log(Stringf("computeOptimizedBounds() - Initial bound range: [%.6f, %.6f]",
                     initialBound.min().item<float>(), initialBound.max().item<float>()));
     }
-
     // Create optimizer for this bound side
     auto alphaParams = collectAlphaParameters(isLower);
     
@@ -502,91 +515,6 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
         torch::Tensor currentUpper = extractUpperBoundsFromCROWN();
         torch::Tensor currentBound = isLower ? currentLower : currentUpper;
 
-        // DEBUG: Print intermediate bounds (pre-activation) and alpha values for this iteration
-        {
-            torch::NoGradGuard no_grad;
-
-            auto getBoundsForNode = [&](unsigned nodeIdx, torch::Tensor& lb, torch::Tensor& ub) -> bool {
-                if (_crownAnalysis->hasConcreteBounds(nodeIdx)) {
-                    lb = _crownAnalysis->getConcreteLowerBound(nodeIdx);
-                    ub = _crownAnalysis->getConcreteUpperBound(nodeIdx);
-                    return true;
-                }
-                if (_crownAnalysis->hasIBPBounds(nodeIdx)) {
-                    lb = _crownAnalysis->getIBPLowerBound(nodeIdx);
-                    ub = _crownAnalysis->getIBPUpperBound(nodeIdx);
-                    return true;
-                }
-                return false;
-            };
-
-            auto getReLUInputIndex = [&](unsigned reluIdx) -> int {
-                if (!_torchModel) return -1;
-                const auto& deps = _torchModel->getDependencies(reluIdx);
-                if (deps.size() < 1) return -1;
-                return (int)deps[0];
-            };
-
-            auto nodeNameForIndex = [&](unsigned nodeIdx) -> std::string {
-                auto node = _crownAnalysis->getNode(nodeIdx);
-                if (!node) return std::string("<unknown>");
-                return std::string(node->getNodeName().ascii());
-            };
-
-            printf("[DEBUG Iter %u/%u] ===== INTERMEDIATE LAYER BOUNDS (pre-activation) =====\n",
-                   iter + 1, _iteration);
-
-            for (const auto& nodePair : _optimizableNodes) {
-                unsigned reluIdx = nodePair.first;
-                int inputIdx = getReLUInputIndex(reluIdx);
-                if (inputIdx < 0) {
-                    continue;
-                }
-
-                torch::Tensor input_lb, input_ub;
-                if (!getBoundsForNode((unsigned)inputIdx, input_lb, input_ub)) {
-                    continue;
-                }
-
-                auto lb_flat = input_lb.flatten();
-                auto ub_flat = input_ub.flatten();
-                int outDim = (int)lb_flat.numel();
-
-                int active = 0;
-                int inactive = 0;
-                int unstable = 0;
-
-                printf("[DEBUG Iter %u] BoundRelu %s input (%s): %d neurons\n",
-                       iter + 1,
-                       nodeNameForIndex(reluIdx).c_str(),
-                       nodeNameForIndex((unsigned)inputIdx).c_str(),
-                       outDim);
-
-                for (int i = 0; i < outDim; ++i) {
-                    float l = lb_flat[i].item<float>();
-                    float u = ub_flat[i].item<float>();
-                    const char* status = "unstable";
-                    if (u <= 0.0f) {
-                        status = "inactive";
-                        inactive++;
-                    } else if (l >= 0.0f) {
-                        status = "active";
-                        active++;
-                    } else {
-                        unstable++;
-                    }
-
-                    printf("  neuron %d: L=%.4f, U=%.4f [%s]\n", i, l, u, status);
-                }
-
-                printf("  Summary: active=%d, inactive=%d, unstable=%d\n", active, inactive, unstable);
-            }
-
-            printf("[DEBUG Iter %u/%u] ===== END INTERMEDIATE BOUNDS =====\n",
-                   iter + 1, _iteration);
-
-        }
-        
         // Compute current bound width (mean of upper - lower)
         float current_width = 0.0f;
         if (currentLower.defined() && currentUpper.defined() && currentLower.numel() > 0) {
@@ -618,7 +546,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
             // Ensure bounds still have gradients attached for loss computation
             loss = computeLoss(currentLower, currentUpper, isLower);
         }
-        
+
         // Log iteration statistics
         log(Stringf("computeOptimizedBounds() - Iter %u: bound_width=%.6f (initial=%.6f, improvement=%.2f%%), "
                     "bound_range=[%.6f, %.6f]",
@@ -630,6 +558,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
         // Detach currentBound immediately to prevent any gradient tracking issues
         torch::Tensor currentBoundDetached = currentBound.detach();
         bool improved = false;
+        size_t improvedCount = 0;
         if (!bestBounds.defined()) {
             bestBounds = currentBoundDetached.clone();
             improved = true;
@@ -644,6 +573,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
                 allIndices.push_back(static_cast<int>(i));
             }
             updateBestAlphas(allIndices, isLower);
+            improvedCount = static_cast<size_t>(specDim);
         } else {
             auto improvedIndices = findImprovedIndices(currentBoundDetached, bestBounds, isLower);
             improved = !improvedIndices.empty();
@@ -653,6 +583,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
                     : torch::min(bestBounds, currentBoundDetached).detach();
                 updateBestAlphas(improvedIndices, isLower);
             }
+            improvedCount = improvedIndices.size();
         }
 
         if (improved) {
@@ -663,6 +594,10 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
             }
             log(Stringf("computeOptimizedBounds() - Iter %u: IMPROVED %s bound (new best width=%.6f)",
                         iter + 1, isLower ? "lower" : "upper", best_width));
+
+            // Snapshot intermediate bounds when we find better bounds
+            // This captures the pre-activation bounds at this improved state
+            snapshotBestIntermediateBounds();
         }
 
         // Track convergence for early stopping
@@ -748,8 +683,9 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
         }
     }
 
-    // Restore best alphas and compute final bounds
+    // Restore best alphas and best intermediate bounds, then compute final bounds
     restoreBestAlphas(isLower);
+    restoreBestIntermediateBounds();
     _crownAnalysis->clearConcreteBounds();
     _crownAnalysis->resetProcessingState();
     _crownAnalysis->run(false); // Final pass doesn't need gradients
@@ -760,7 +696,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
     if (bestBounds.defined()) {
         finalBound = isLower ? torch::max(finalBound, bestBounds) : torch::min(finalBound, bestBounds);
     }
-    
+
     // Compute final bound width
     float final_width = 0.0f;
     if (finalLower.defined() && finalUpper.defined() && finalLower.numel() > 0) {
@@ -929,7 +865,17 @@ void AlphaCROWNAnalysis::restoreBestAlphas(bool isLower)
 
     for (auto& [nodeIdx, perStart] : currentStorage) {
         for (auto& [startKey, ap] : perStart) {
-            ap.alpha.data().copy_(bestStorage[nodeIdx][startKey].alpha.data());
+            auto& bestAp = bestStorage[nodeIdx][startKey];
+            // Avoid size mismatch: only copy if shapes match
+            if (ap.alpha.defined() && bestAp.alpha.defined()
+                && ap.alpha.sizes() == bestAp.alpha.sizes()) {
+                ap.alpha.data().copy_(bestAp.alpha.data());
+            } else {
+                // Align best storage to current shape for future runs
+                if (ap.alpha.defined()) {
+                    bestAp.alpha = ap.alpha.detach().clone();
+                }
+            }
         }
     }
 }
@@ -946,14 +892,12 @@ void AlphaCROWNAnalysis::snapshotBestIntermediateBounds()
     unsigned numNodesSnapshoted = 0;
 
     // Iterate through all nodes and capture PRE-ACTIVATION bounds (inputs to ReLU)
-    // The secant for ReLU uses the pre-activation [l,u], not post-activation
     unsigned numNodes = _crownAnalysis->getNumNodes();
     for (unsigned nodeIdx = 0; nodeIdx < numNodes; ++nodeIdx) {
         auto node = _crownAnalysis->getNode(nodeIdx);
         if (!node) continue;
 
         // Only snapshot bounds for nodes that are INPUTS to ReLU layers
-        // (i.e., the pre-activation bounds that determine the ReLU secant)
         bool isPreActivation = false;
 
         // Check if this node feeds into a ReLU

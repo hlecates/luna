@@ -34,9 +34,9 @@ static void printBounds(const torch::Tensor& lower, const torch::Tensor& upper) 
 }
 
 enum class PropertyStatus {
-    Verified,
-    Violated,
-    Unknown
+    Unsat,   // safe/verified - NO input violates the property
+    Sat,     // unsafe - counterexample exists
+    Unknown  // inconclusive
 };
 
 static PropertyStatus evaluatePropertyStatus(
@@ -88,14 +88,14 @@ static PropertyStatus evaluatePropertyStatus(
         }
 
         if (anyVerified) {
-            detail = "at least one OR-branch verified";
-            return PropertyStatus::Verified;
+            detail = "at least one OR-branch verified (safe)";
+            return PropertyStatus::Unsat;
         }
         if (allRefuted) {
-            detail = "all OR-branches refuted";
-            return PropertyStatus::Violated;
+            detail = "all OR-branches refuted (counterexample exists)";
+            return PropertyStatus::Sat;
         }
-        detail = "no OR-branch verified or refuted";
+        detail = "bounds inconclusive for OR-branches";
         return PropertyStatus::Unknown;
     }
 
@@ -105,15 +105,15 @@ static PropertyStatus evaluatePropertyStatus(
     bool anyViolated = (lowerDiff > 0).any().item<bool>();
 
     if (allVerified) {
-        detail = "all constraints satisfied by upper bounds";
-        return PropertyStatus::Verified;
+        detail = "all upper bounds <= threshold (property verified)";
+        return PropertyStatus::Unsat;
     }
     if (anyViolated) {
-        detail = "some constraint violated by lower bounds";
-        return PropertyStatus::Violated;
+        detail = "lower bound > threshold (counterexample exists)";
+        return PropertyStatus::Sat;
     }
 
-    detail = "constraints inconclusive";
+    detail = "bounds do not prove safety or find counterexample";
     return PropertyStatus::Unknown;
 }
 
@@ -340,21 +340,21 @@ int lunaMain(int argc, char* argv[]) {
 
         std::string statusLabel;
         switch (status) {
-            case PropertyStatus::Verified:
-                statusLabel = "VERIFIED";
+            case PropertyStatus::Unsat:
+                statusLabel = "unsat";
                 break;
-            case PropertyStatus::Violated:
-                statusLabel = "VIOLATED";
+            case PropertyStatus::Sat:
+                statusLabel = "sat";
                 break;
             case PropertyStatus::Unknown:
             default:
-                statusLabel = "UNKNOWN";
+                statusLabel = "unknown";
                 break;
         }
 
-        std::cout << "\nProperty status: " << statusLabel << std::endl;
+        std::cout << "\nResult: " << statusLabel << std::endl;
         if (!statusDetail.empty()) {
-            std::cout << "Property details: " << statusDetail << std::endl;
+            std::cout << "Details: " << statusDetail << std::endl;
         }
 
         return 0;

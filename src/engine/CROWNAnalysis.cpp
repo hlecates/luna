@@ -11,7 +11,6 @@
 #include <iomanip>
 #include <sstream>
 
-
 namespace NLR {
 
 
@@ -148,7 +147,7 @@ void CROWNAnalysis::run(bool enableGradients)
         // The standard CROWN mode with multiple backward passes causes issues with PyTorch's autograd
         // when the same alpha tensors are accessed from different computation graphs.
         bool useStandardCrown = LunaConfiguration::USE_STANDARD_CROWN;
-        
+
         if (useStandardCrown) {
             // Standard CROWN: Selective backward passes for ReLU layers
 
@@ -183,7 +182,8 @@ void CROWNAnalysis::run(bool enableGradients)
                     // If so, skip it as IBP bounds are already exact for first linear layer
                     bool isFirstLayerActivation = false;
 
-                    if (_torchModel->getDependenciesMap().exists(nodeIdx)) {
+                    bool hasDeps = _torchModel->getDependenciesMap().exists(nodeIdx);
+                    if (hasDeps) {
                         const Vector<unsigned>& deps = _torchModel->getDependencies(nodeIdx);
                         if (deps.size() == 1) {
                             unsigned prevNode = deps[0];
@@ -224,7 +224,7 @@ void CROWNAnalysis::run(bool enableGradients)
                         // This ensures that the pre-activation bounds (Linear/Conv) are tightened using CROWN,
                         // which are then used to calculate tighter relaxation slopes for this activation.
 
-                        if (_torchModel->getDependenciesMap().exists(nodeIdx)) {
+                        if (hasDeps) {
                             const Vector<unsigned>& deps = _torchModel->getDependencies(nodeIdx);
                             for (unsigned dep : deps) {
                                 // Avoid adding duplicates or constant nodes if possible (though concretize handles it)
@@ -240,6 +240,7 @@ void CROWNAnalysis::run(bool enableGradients)
                             }
                         }
                     }
+
                 }
             }
 
@@ -251,8 +252,10 @@ void CROWNAnalysis::run(bool enableGradients)
             log(Stringf("run() - Will perform %u backward passes (ReLUs%s)",
                         nodesNeedingCrown.size(), _torchModel->hasSpecificationMatrix() ? " + specification matrix output" : " + output"));
 
-            // Perform selective backward passes from each node that needs CROWN bounds
-            // This gives tight bounds where needed while keeping efficiency
+            // Luna uses multiple CROWN backward passes (one per pre-activation + output). Each
+            // backward starts at a target node and concretizes that node. auto_LiRPA uses a single
+            // backward from the output; intermediate bounds there come from that one pass. So
+            // per-neuron intermediate bounds can differ; final output bounds are comparable.
             for (unsigned targetNode : nodesNeedingCrown) {
                 auto& node = _nodes[targetNode];
                 unsigned nodeSize = node->getOutputSize();
@@ -262,6 +265,7 @@ void CROWNAnalysis::run(bool enableGradients)
                 Vector<unsigned> unstableIndices;
                 bool sparseMode = false;
                 bool usedCache = false;
+                int64_t unstableCount = -1;
 
                 if (_alphaStartCacheEnabled) {
                     auto itCache = _alphaStartCache.find(startKey);
@@ -269,6 +273,7 @@ void CROWNAnalysis::run(bool enableGradients)
                         unstableIndices = itCache->second.unstableIndices;
                         sparseMode = itCache->second.sparseMode;
                         usedCache = true;
+                        unstableCount = static_cast<int64_t>(unstableIndices.size());
                     }
                 }
                 
@@ -287,10 +292,13 @@ void CROWNAnalysis::run(bool enableGradients)
                         // Heuristic: If node is not output node, assume it feeds into ReLU and check < 0 < u
                         if (targetNode != outputIndex) {
                             torch::Tensor unstableMask = (lower < 0) & (upper > 0);
-                            int64_t unstableCount = unstableMask.sum().item<int64_t>();
-                            
+                            unstableCount = unstableMask.sum().item<int64_t>();
+                            bool allowSparse =
+                                (LunaConfiguration::ANALYSIS_METHOD == LunaConfiguration::AnalysisMethod::AlphaCROWN) &&
+                                !LunaConfiguration::USE_STANDARD_CROWN;
+                            bool chooseSparse = allowSparse && (unstableCount < nodeSize && unstableCount > 0);
                             // Threshold for sparse mode (e.g. if < 50% neurons are unstable)
-                            if (unstableCount < nodeSize && unstableCount > 0) {
+                            if (chooseSparse) {
                                 // Collect indices
                                 auto indices = unstableMask.nonzero().flatten(); // [N]
                                 // Convert to Vector<unsigned>
@@ -302,12 +310,12 @@ void CROWNAnalysis::run(bool enableGradients)
                                 log(Stringf("run() - Node %u: Sparse CROWN for %u/%u unstable neurons", 
                                     targetNode, unstableCount, nodeSize));
                             } else if (unstableCount == 0) {
-                                // All stable! No need for CROWN at all.
-                                log(Stringf("run() - Node %u: All neurons stable (IBP sufficient), skipping CROWN", targetNode));
-                                // We can just use IBP bounds as concrete bounds
-                                _concreteBounds[targetNode] = bounds;
-                                _torchModel->setConcreteBounds(targetNode, bounds);
-                                continue;
+                                // All stable, but still run dense CROWN to tighten pre-activation bounds.
+                                // This matches auto-LiRPA behavior for alpha-CROWN when comparing intermediates.
+                                log(Stringf("run() - Node %u: All neurons stable (running dense CROWN for tighter bounds)", targetNode));
+                                // Leave unstableIndices empty to force dense CROWN in backwardFrom/concretizeNode.
+                                unstableIndices.clear();
+                                sparseMode = false;
                             }
                         }
                     }
@@ -480,7 +488,7 @@ void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& un
     } else if (isOutputNode && _torchModel->hasSpecificationMatrix()) {
         // Query TorchModel for specification matrix - preprocess it (using output node for correct sizing)
         torch::Tensor specMatrix = _torchModel->getSpecificationMatrix();
-        
+
         // DEBUG: Print specification matrix before preprocessing
         if (LunaConfiguration::VERBOSE) {
             printf("[DEBUG] Specification matrix (raw) shape: [");
@@ -974,7 +982,7 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
     }
     inputLower = inputLower.to(torch::kFloat32);
     inputUpper = inputUpper.to(torch::kFloat32);
-    
+
 
     log(Stringf("concretizeNode() - Checking for A matrices at input node %d", inputIndex));
     log(Stringf("concretizeNode() - _lA.exists(%d)=%d, _uA.exists(%d)=%d",
@@ -1157,7 +1165,6 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
     }
 
     if (concreteLower.defined() && concreteUpper.defined()) {
-        
         if (!unstableIndices.empty()) {
             // If we computed sparse bounds, we need to scatter them into the full bounds tensor
             // Use IBP bounds as the base
@@ -1356,6 +1363,7 @@ Vector<BoundedTensor<torch::Tensor>> CROWNAnalysis::getInputBoundsForNode(unsign
             unsigned outputSize = node->getOutputSize();
             torch::Tensor lower, upper;
 
+            std::string source = "unknown";
             if (node->getNodeType() == NodeType::INPUT) {
                 if (_torchModel->hasInputBounds()) {
                     lower = _torchModel->getInputLowerBounds();
@@ -1365,24 +1373,29 @@ Vector<BoundedTensor<torch::Tensor>> CROWNAnalysis::getInputBoundsForNode(unsign
                     lower = torch::zeros({(long)outputSize}, options);
                     upper = torch::ones({(long)outputSize}, options);
                 }
+                source = "input";
             } else {
                 // First check for fixed intermediate bounds (alpha-CROWN best bounds tracking)
                 auto fixedIt = _fixedConcreteBounds.find(inputIndex);
                 if (fixedIt != _fixedConcreteBounds.end()) {
                     lower = fixedIt->second.first;
                     upper = fixedIt->second.second;
+                    source = "fixed";
                 }
                 // Otherwise prefer CROWN concrete bounds in standard mode; otherwise IBP
                 else if (LunaConfiguration::USE_STANDARD_CROWN && _concreteBounds.exists(inputIndex)) {
                     lower = _concreteBounds[inputIndex].lower();
                     upper = _concreteBounds[inputIndex].upper();
+                    source = "crown";
                 } else if (_ibpBounds.exists(inputIndex)) {
                     lower = _ibpBounds[inputIndex].lower();
                     upper = _ibpBounds[inputIndex].upper();
+                    source = "ibp";
                 } else {
                     auto options = torch::TensorOptions().dtype(torch::kFloat32).device(device);
                     lower = torch::zeros({(long)outputSize}, options);
                     upper = torch::ones({(long)outputSize}, options);
+                    source = "default";
                 }
             }
             if (lower.defined() && lower.device() != device) {

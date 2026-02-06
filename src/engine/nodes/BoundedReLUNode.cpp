@@ -270,7 +270,9 @@ void BoundedReLUNode::boundBackward(
     // ----- UPPER path -----
     if (last_uA.defined()) {
         auto aU_u = relaxation_result.ub_upper_d.defined() ? relaxation_result.ub_upper_d : relaxation_result.d_upper;
-        auto aL_u = relaxation_result.lb_lower_d.defined() ? relaxation_result.lb_lower_d : relaxation_result.d_lower;
+        // Use ub_lower_d for upper-path A<0 (matches auto_LiRPA). Fall back to standard lower slope if not set.
+        auto aL_u = relaxation_result.ub_lower_d.defined() ? relaxation_result.ub_lower_d
+                                                          : relaxation_result.d_lower;
         auto bU_u = relaxation_result.bias_upper.defined() ? relaxation_result.bias_upper : torch::zeros_like(input_lower);
         auto bL_u = relaxation_result.bias_lower.defined() ? relaxation_result.bias_lower : torch::zeros_like(input_lower);
 
@@ -638,7 +640,10 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
 
             // Write per-spec upper-path choices
             result.ub_upper_d = k_upper_spec;     // used when A ≥ 0
+            // Match auto_LiRPA: always provide ub_lower_d from alpha slice (we reuse alpha_full)
+            // so upper-path A<0 uses optimized slope.
             result.ub_lower_d = alpha_full;       // used when A < 0
+
 
             // Biases (shape: [outDim])
             auto b_upper = -input_lb_flat * upper_d_flat; // secant bias
@@ -654,6 +659,7 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
             // Skip the standard masking below since we've already set everything
             return;
         }
+
     }
 
 skip_alpha:
