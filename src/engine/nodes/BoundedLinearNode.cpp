@@ -1,5 +1,6 @@
 // Marabou/src/nlr/bounded_modules/BoundedLinearNode.cpp
 #include "BoundedLinearNode.h"
+#include <sstream>
 
 namespace NLR {
 
@@ -12,6 +13,11 @@ NLR::BoundedLinearNode::BoundedLinearNode(const torch::nn::Linear& linearModule,
     _nodeIndex = 0;
     _input_size = 0;
     _output_size = 0;
+
+    // Lazy computation flags (auto_LiRPA style)
+    // Linear layers don't require input bounds for relaxation
+    // _requiresInputBounds is already empty by default (no inputs need bounds)
+    // Linear needs CROWN for tight bounds (not IBP), so _ibpIntermediate = false (default)
 
     // Try to set sizes from weight matrix during construction
     if (_linearModule && _linearModule->weight.defined()) {
@@ -109,17 +115,18 @@ void BoundedLinearNode::boundBackward(
         throw std::runtime_error("BoundedLinearNode expects at least one input");
     }
 
+    if (!last_lA.defined() || !last_uA.defined()) {
+        throw std::runtime_error("BoundedLinearNode: last_lA and last_uA must be defined");
+    }
     if (!last_lA.isTensor() || !last_uA.isTensor()) {
-        // Fallback or error for Patches
         throw std::runtime_error("BoundedLinearNode: Patches mode propagation not implemented (requires conversion to matrix)");
     }
 
     torch::Tensor last_lA_tensor = last_lA.asTensor();
     torch::Tensor last_uA_tensor = last_uA.asTensor();
 
-
     // Extract weight and bias from the linear module on the same device as A
-    const auto device = last_lA_tensor.defined() ? last_lA_tensor.device() : last_uA_tensor.device();
+    const auto device = last_lA_tensor.device();
     auto weight = _linearModule->weight
         .to(torch::TensorOptions().dtype(torch::kFloat32).device(device));
     auto bias = _linearModule->bias.defined()
@@ -141,104 +148,77 @@ void BoundedLinearNode::boundBackward(
     // For 3D A: [spec, batch, output_features] @ [output_features, input_features] -> [spec, batch, input_features]
     // For 2D A: [spec, output_features] @ [output_features, input_features] -> [spec, input_features]
     
-    torch::Tensor lA, uA;
-    
-    if (last_lA_tensor.dim() == 3) {
-        // 3D A matrix: [spec, batch, features] where features = output_features of this layer
-        // Weight has shape [output_features, input_features]
-        // We want: [spec, batch, output_features] @ [output_features, input_features] -> [spec, batch, input_features]
-        long spec_dim = last_lA_tensor.size(0);
-        long batch_dim = last_lA_tensor.size(1);
-        long output_features = last_lA_tensor.size(2);
-        long input_features = weight.size(1);
-        
-        // Validate dimensions
-        if (weight.size(0) != output_features) {
-            std::ostringstream oss;
-            oss << "BoundedLinearNode::boundBackward: dimension mismatch - A matrix has " << output_features
-                << " features but weight has " << weight.size(0) << " output features";
-            throw std::runtime_error(oss.str());
-        }
-        
-        // Reshape to [spec * batch, output_features] for efficient matmul
-        torch::Tensor lA_2d = last_lA_tensor.reshape({spec_dim * batch_dim, output_features});
-        torch::Tensor uA_2d = last_uA_tensor.reshape({spec_dim * batch_dim, output_features});
-        
-        // Matmul: [spec * batch, output_features] @ [output_features, input_features] -> [spec * batch, input_features]
-        lA_2d = torch::matmul(lA_2d, weight);
-        uA_2d = torch::matmul(uA_2d, weight);
-        
-        // Reshape back to [spec, batch, input_features]
-        lA = lA_2d.reshape({spec_dim, batch_dim, input_features});
-        uA = uA_2d.reshape({spec_dim, batch_dim, input_features});
-    } else if (last_lA_tensor.dim() == 2) {
-        // 2D A matrix: [spec, features] (legacy format) where features = output_features
-        // Weight has shape [output_features, input_features]
-        // [spec, output_features] @ [output_features, input_features] -> [spec, input_features]
-        
-        long spec_dim = last_lA_tensor.size(0);
-        long features = last_lA_tensor.size(1);
-        
-        // Validate dimensions and identify the root cause
-        if (weight.size(0) != features) {
-            // Check if A matrix is transposed
-            if (weight.size(0) == spec_dim && weight.size(0) != features) {
+    auto projectA = [&](const torch::Tensor& A_in) -> torch::Tensor {
+        if (!A_in.defined()) return torch::Tensor();
+        if (A_in.dim() == 3) {
+            long spec_dim = A_in.size(0);
+            long batch_dim = A_in.size(1);
+            long output_features = A_in.size(2);
+            long input_features = weight.size(1);
+            if (weight.size(0) != output_features) {
                 std::ostringstream oss;
-                oss << "BoundedLinearNode::boundBackward: A matrix appears TRANSPOSED!\n"
-                    << "  Expected: [spec, features] = [1, 50] but got: [" << spec_dim << ", " << features << "]\n"
-                    << "  Weight shape: [" << weight.size(0) << ", " << weight.size(1) << "]\n"
-                    << "  This suggests the A matrix was transposed somewhere in backward propagation.\n"
-                    << "  Check where 3D A matrix [1, 1, 50] was squeezed/reshaped to 2D.";
-                throw std::runtime_error(oss.str());
-            } else {
-                std::ostringstream oss;
-                oss << "BoundedLinearNode::boundBackward: 2D A matrix dimension mismatch - A has " << features
-                    << " features (dim 1) but weight has " << weight.size(0) << " output features. "
-                    << "A shape: [" << spec_dim << ", " << features << "], weight shape: [" 
-                    << weight.size(0) << ", " << weight.size(1) << "]";
+                oss << "BoundedLinearNode::boundBackward: dimension mismatch - A matrix has " << output_features
+                    << " features but weight has " << weight.size(0) << " output features";
                 throw std::runtime_error(oss.str());
             }
+            torch::Tensor A_2d = A_in.reshape({spec_dim * batch_dim, output_features});
+            A_2d = torch::matmul(A_2d, weight);
+            return A_2d.reshape({spec_dim, batch_dim, input_features});
+        } else if (A_in.dim() == 2) {
+            long spec_dim = A_in.size(0);
+            long features = A_in.size(1);
+            if (weight.size(0) != features) {
+                if (weight.size(0) == spec_dim && weight.size(0) != features) {
+                    std::ostringstream oss;
+                    oss << "BoundedLinearNode::boundBackward: A matrix appears TRANSPOSED!\n"
+                        << "  Expected: [spec, features] but got: [" << spec_dim << ", " << features << "]\n"
+                        << "  Weight shape: [" << weight.size(0) << ", " << weight.size(1) << "]";
+                    throw std::runtime_error(oss.str());
+                } else {
+                    std::ostringstream oss;
+                    oss << "BoundedLinearNode::boundBackward: 2D A matrix dimension mismatch - A has " << features
+                        << " features (dim 1) but weight has " << weight.size(0) << " output features. "
+                        << "A shape: [" << spec_dim << ", " << features << "], weight shape: ["
+                        << weight.size(0) << ", " << weight.size(1) << "]";
+                    throw std::runtime_error(oss.str());
+                }
+            }
+            return torch::matmul(A_in, weight);
+        } else if (A_in.dim() == 1) {
+            return torch::matmul(A_in.unsqueeze(0), weight);
+        } else {
+            std::ostringstream oss;
+            oss << "BoundedLinearNode::boundBackward: unsupported A matrix dimension " << A_in.dim()
+                << ", weight shape: [" << weight.size(0) << ", " << weight.size(1) << "]";
+            throw std::runtime_error(oss.str());
         }
-        
-        lA = torch::matmul(last_lA_tensor, weight);
-        uA = torch::matmul(last_uA_tensor, weight);
-    } else if (last_lA_tensor.dim() == 1) {
-        // 1D A matrix: [features] where features = output_features
-        // Add spec dimension: [1, output_features] @ [output_features, input_features] -> [1, input_features]
-        lA = torch::matmul(last_lA_tensor.unsqueeze(0), weight);
-        uA = torch::matmul(last_uA_tensor.unsqueeze(0), weight);
-    } else {
-        // Validate dimensions before throwing error
-        std::ostringstream oss;
-        oss << "BoundedLinearNode::boundBackward: unsupported A matrix dimension " << last_lA_tensor.dim()
-            << ", shape: [";
-        for (int64_t i = 0; i < last_lA_tensor.dim(); ++i) {
-            if (i > 0) oss << ", ";
-            oss << last_lA_tensor.size(i);
-        }
-        oss << "], weight shape: [" << weight.size(0) << ", " << weight.size(1) << "]";
-        throw std::runtime_error(oss.str());
-    }
+    };
 
-    outputA_matrices.append(Pair<BoundA, BoundA>(BoundA(lA), BoundA(uA)));
+    torch::Tensor lA = projectA(last_lA_tensor);
+    torch::Tensor uA = projectA(last_uA_tensor);
+
+    outputA_matrices.append(Pair<BoundA, BoundA>(
+        BoundA(lA), BoundA(uA)));
     
     // Compute bias contribution: A @ bias = (A * bias).sum(-1) via broadcasting
     // Works for any A shape: [features], [spec, features], [spec, batch, features]
-    if (bias.defined() && last_lA_tensor.defined() && last_lA_tensor.numel() > 0) {
-        lbias = (last_lA_tensor * bias).sum(-1);
-        ubias = (last_uA_tensor * bias).sum(-1);
-
-        // Adjust output shape to maintain [spec, batch] format expected downstream
-        if (last_lA_tensor.dim() == 2) {
-            // [spec, features] -> sum -> [spec], need [spec, 1]
-            lbias = lbias.unsqueeze(-1);
-            ubias = ubias.unsqueeze(-1);
-        } else if (last_lA_tensor.dim() == 1) {
-            // [features] -> sum -> scalar, need [1, 1]
-            lbias = lbias.unsqueeze(0).unsqueeze(-1);
-            ubias = ubias.unsqueeze(0).unsqueeze(-1);
+    if (bias.defined()) {
+        if (last_lA_tensor.defined() && last_lA_tensor.numel() > 0) {
+            lbias = (last_lA_tensor * bias).sum(-1);
+            if (last_lA_tensor.dim() == 2) {
+                lbias = lbias.unsqueeze(-1);
+            } else if (last_lA_tensor.dim() == 1) {
+                lbias = lbias.unsqueeze(0).unsqueeze(-1);
+            }
         }
-        // For 3D [spec, batch, features] -> sum -> [spec, batch], already correct
+        if (last_uA_tensor.defined() && last_uA_tensor.numel() > 0) {
+            ubias = (last_uA_tensor * bias).sum(-1);
+            if (last_uA_tensor.dim() == 2) {
+                ubias = ubias.unsqueeze(-1);
+            } else if (last_uA_tensor.dim() == 1) {
+                ubias = ubias.unsqueeze(0).unsqueeze(-1);
+            }
+        }
     }
 
 }

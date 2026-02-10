@@ -13,7 +13,6 @@
 
 namespace NLR {
 
-
 static std::string tensorStatsStr(const torch::Tensor& t) {
     if (!t.defined() || t.numel() == 0) return "undef";
     torch::Tensor f = t.to(torch::kFloat32);
@@ -149,203 +148,63 @@ void CROWNAnalysis::run(bool enableGradients)
         bool useStandardCrown = LunaConfiguration::USE_STANDARD_CROWN;
 
         if (useStandardCrown) {
-            // Standard CROWN: Selective backward passes for ReLU layers
+            // =========================================================================
+            // Standard CROWN with LAZY intermediate bound computation (auto_LiRPA style)
+            // =========================================================================
+            // Instead of multiple backward passes (one per pre-activation), we do:
+            // 1. Compute IBP bounds for all nodes (baseline)
+            // 2. Single backward pass from output
+            // 3. checkPriorBounds() triggers lazy intermediate computation when needed
+            // This matches auto_LiRPA's approach and reduces backward passes from ~8 to ~2
 
-            // First, compute IBP bounds as reference (used for linear/conv layers)
+            // First, compute IBP bounds as reference
             stage = "computeIBPBounds(standard)";
             computeIBPBounds();
 
-            // Copy IBP bounds to concrete bounds for all nodes initially
-            // Linear/Conv layers will keep these IBP bounds (they're tight enough)
+            // Only set concrete bounds for INPUT node initially
+            // This allows lazy computation to trigger CROWN for intermediate nodes
+            // (auto_LiRPA style: only input bounds are "concrete" initially)
             for (const auto& p : _ibpBounds) {
-                _concreteBounds[p.first] = p.second;
-                _torchModel->setConcreteBounds(p.first, p.second);
-            }
-
-            // Identify ReLU layers that need CROWN bounds (tighter than IBP)
-            Vector<unsigned> nodesNeedingCrown;
-            Vector<unsigned> forwardOrder = _torchModel->topologicalSort();
-
-            // Find the input node index for checking first layer connections
-            unsigned inputNodeIdx = 0;
-            for (const auto& p : _nodes) {
-                if (p.second->getNodeType() == NodeType::INPUT) {
-                    inputNodeIdx = p.first;
-                    break;
+                unsigned nodeIdx = p.first;
+                if (_nodes.exists(nodeIdx) && _nodes[nodeIdx]->getNodeType() == NodeType::INPUT) {
+                    _concreteBounds[nodeIdx] = p.second;
+                    _torchModel->setConcreteBounds(nodeIdx, p.second);
+                    _nodes[nodeIdx]->setBounds(p.second.lower(), p.second.upper());
                 }
             }
 
-            for (unsigned nodeIdx : forwardOrder) {
-                NodeType nodeType = _nodes[nodeIdx]->getNodeType();
-                if (nodeType == NodeType::RELU || nodeType == NodeType::SIGMOID) {
-                    // Check if this activation follows the first linear/conv layer
-                    // If so, skip it as IBP bounds are already exact for first linear layer
-                    bool isFirstLayerActivation = false;
-
-                    bool hasDeps = _torchModel->getDependenciesMap().exists(nodeIdx);
-                    if (hasDeps) {
-                        const Vector<unsigned>& deps = _torchModel->getDependencies(nodeIdx);
-                        if (deps.size() == 1) {
-                            unsigned prevNode = deps[0];
-                            // Check if previous node is linear/conv connected directly to input
-                            if (_nodes[prevNode]->getNodeType() == NodeType::LINEAR ||
-                                _nodes[prevNode]->getNodeType() == NodeType::CONV ||
-                                _nodes[prevNode]->getNodeType() == NodeType::BATCHNORM) {
-
-                                if (_torchModel->getDependenciesMap().exists(prevNode)) {
-                                    const Vector<unsigned>& prevDeps = _torchModel->getDependencies(prevNode);
-                                    // Check if directly connected to input (possibly through reshape)
-                                    for (unsigned pd : prevDeps) {
-                                        if (pd == inputNodeIdx) {
-                                            isFirstLayerActivation = true;
-                                            log(Stringf("run() - Skipping activation at node %u (follows first linear layer, IBP is exact)", nodeIdx));
-                                            break;
-                                        }
-                                        // Also check if connected through reshape/flatten nodes
-                                        if (_nodes[pd]->getNodeType() == NodeType::RESHAPE ||
-                                            _nodes[pd]->getNodeType() == NodeType::FLATTEN) {
-                                            if (_torchModel->getDependenciesMap().exists(pd)) {
-                                                const Vector<unsigned>& reshapeDeps = _torchModel->getDependencies(pd);
-                                                if (reshapeDeps.size() == 1 && reshapeDeps[0] == inputNodeIdx) {
-                                                    isFirstLayerActivation = true;
-                                                    log(Stringf("run() - Skipping activation at node %u (follows first linear after reshape)", nodeIdx));
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (!isFirstLayerActivation) {
-                        // Instead of adding the activation node itself, we must add its INPUT nodes.
-                        // This ensures that the pre-activation bounds (Linear/Conv) are tightened using CROWN,
-                        // which are then used to calculate tighter relaxation slopes for this activation.
-
-                        if (hasDeps) {
-                            const Vector<unsigned>& deps = _torchModel->getDependencies(nodeIdx);
-                            for (unsigned dep : deps) {
-                                // Avoid adding duplicates or constant nodes if possible (though concretize handles it)
-
-                                bool found = false;
-                                for (unsigned existing : nodesNeedingCrown) {
-                                    if (existing == dep) { found = true; break; }
-                                }
-                                if (!found) {
-                                    nodesNeedingCrown.append(dep);
-                                    log(Stringf("run() - Adding activation input node %u for CROWN bounds", dep));
-                                }
-                            }
-                        }
-                    }
-
-                }
-            }
-
-            // Always compute CROWN bounds for the output node
+            // Set start context for output node
             unsigned outputIndex = getOutputIndex();
-            nodesNeedingCrown.append(outputIndex);
-            
+            auto& outputNode = _nodes[outputIndex];
+            unsigned outputSize = outputNode->getOutputSize();
+            std::string startKey = "/" + std::to_string(outputIndex);
+            _setCurrentStart(startKey, outputSize);
+            _currentStartSpecIndices.clear();
 
-            log(Stringf("run() - Will perform %u backward passes (ReLUs%s)",
-                        nodesNeedingCrown.size(), _torchModel->hasSpecificationMatrix() ? " + specification matrix output" : " + output"));
+            log(Stringf("run() - Single backward pass from output (lazy intermediate computation)"));
 
-            // Luna uses multiple CROWN backward passes (one per pre-activation + output). Each
-            // backward starts at a target node and concretizes that node. auto_LiRPA uses a single
-            // backward from the output; intermediate bounds there come from that one pass. So
-            // per-neuron intermediate bounds can differ; final output bounds are comparable.
-            for (unsigned targetNode : nodesNeedingCrown) {
-                auto& node = _nodes[targetNode];
-                unsigned nodeSize = node->getOutputSize();
-                std::string startKey = "/" + std::to_string(targetNode);
-                
-                // Identify unstable neurons for this node using IBP bounds
-                Vector<unsigned> unstableIndices;
-                bool sparseMode = false;
-                bool usedCache = false;
-                int64_t unstableCount = -1;
+            // Compute all intermediate bounds BEFORE the output backward pass
+            // (auto_LiRPA style: check_prior_bounds is called before backward_general)
+            stage = "checkPriorBounds(outputIndex)";
+            checkPriorBounds(outputIndex);
 
-                if (_alphaStartCacheEnabled) {
-                    auto itCache = _alphaStartCache.find(startKey);
-                    if (itCache != _alphaStartCache.end() && itCache->second.initialized) {
-                        unstableIndices = itCache->second.unstableIndices;
-                        sparseMode = itCache->second.sparseMode;
-                        usedCache = true;
-                        unstableCount = static_cast<int64_t>(unstableIndices.size());
-                    }
-                }
-                
-                if (!usedCache && _ibpBounds.exists(targetNode)) {
-                    auto bounds = _ibpBounds[targetNode];
-                    torch::Tensor lower = bounds.lower();
-                    torch::Tensor upper = bounds.upper();
-                    
-                    if (lower.defined() && upper.defined()) {
-                        // Identify neurons where lower < 0 < upper
-                        // For ReLUs, stable means >= 0 or <= 0.
-                        // For other nodes, "unstable" in this context means we want tighter bounds.
-                        // Usually we want bounds for all neurons if we are at output.
-                        // If we are at intermediate (pre-ReLU), we only care about neurons that are ambiguous for ReLU.
-                        
-                        // Heuristic: If node is not output node, assume it feeds into ReLU and check < 0 < u
-                        if (targetNode != outputIndex) {
-                            torch::Tensor unstableMask = (lower < 0) & (upper > 0);
-                            unstableCount = unstableMask.sum().item<int64_t>();
-                            bool allowSparse =
-                                (LunaConfiguration::ANALYSIS_METHOD == LunaConfiguration::AnalysisMethod::AlphaCROWN) &&
-                                !LunaConfiguration::USE_STANDARD_CROWN;
-                            bool chooseSparse = allowSparse && (unstableCount < nodeSize && unstableCount > 0);
-                            // Threshold for sparse mode (e.g. if < 50% neurons are unstable)
-                            if (chooseSparse) {
-                                // Collect indices
-                                auto indices = unstableMask.nonzero().flatten(); // [N]
-                                // Convert to Vector<unsigned>
-                                auto indices_accessor = indices.accessor<int64_t, 1>();
-                                for (int i = 0; i < indices.size(0); ++i) {
-                                    unstableIndices.append(static_cast<unsigned>(indices_accessor[i]));
-                                }
-                                sparseMode = true;
-                                log(Stringf("run() - Node %u: Sparse CROWN for %u/%u unstable neurons", 
-                                    targetNode, unstableCount, nodeSize));
-                            } else if (unstableCount == 0) {
-                                // All stable, but still run dense CROWN to tighten pre-activation bounds.
-                                // This matches auto-LiRPA behavior for alpha-CROWN when comparing intermediates.
-                                log(Stringf("run() - Node %u: All neurons stable (running dense CROWN for tighter bounds)", targetNode));
-                                // Leave unstableIndices empty to force dense CROWN in backwardFrom/concretizeNode.
-                                unstableIndices.clear();
-                                sparseMode = false;
-                            }
-                        }
-                    }
-                }
+            // CRITICAL: Restore start context for output backward pass
+            // checkPriorBounds() calls computeIntermediateBoundsLazy() which overwrites
+            // _currentStartKey to intermediate node keys (e.g., "/22", "/25", etc.)
+            // We must restore it to the output key ("/37") before backwardFrom()
+            // so that alpha parameters for the output backward pass are properly used
+            _setCurrentStart(startKey, outputSize);
+            _currentStartSpecIndices.clear();
 
-                if (_alphaStartCacheEnabled && !usedCache) {
-                    AlphaStartCache cache;
-                    cache.unstableIndices = unstableIndices;
-                    cache.sparseMode = sparseMode;
-                    cache.nodeSize = nodeSize;
-                    cache.initialized = true;
-                    _alphaStartCache[startKey] = std::move(cache);
-                }
+            // Single backward pass from output - all intermediate bounds are now computed
+            stage = std::string("backwardFrom(outputIndex=") + std::to_string(outputIndex) + ")";
+            backwardFrom(outputIndex);
 
-                _setCurrentStart(startKey, sparseMode ? unstableIndices.size() : nodeSize);
-                _currentStartSpecIndices = unstableIndices;
+            // Concretize output bounds
+            stage = std::string("concretizeNode(outputIndex=") + std::to_string(outputIndex) + ")";
+            concretizeNode(outputIndex);
 
-                // Perform backward pass from this specific node
-                stage = std::string("backwardFrom(targetNode=") + std::to_string(targetNode) + ")";
-                backwardFrom(targetNode, unstableIndices);
-
-                // Concretize CROWN bounds for this node
-                stage = std::string("concretizeNode(targetNode=") + std::to_string(targetNode) + ")";
-                concretizeNode(targetNode, unstableIndices);
-            }
-            
-            // Output node bounds are computed above in the loop
-            // If specification matrix is set in TorchModel, backwardFrom() will use it automatically
-
-            // All nodes now have bounds: CROWN for ReLUs/output, IBP for linear/conv
+            // All nodes now have bounds: CROWN for output, lazy-computed for intermediates
         } else {
             // CROWN-IBP: IBP for intermediates, CROWN for final
             stage = "computeIBPBounds(crown_ibp)";
@@ -420,8 +279,11 @@ void CROWNAnalysis::computeIBPBounds()
         // Compute IBP bounds (same computation for all node types)
         BoundedTensor<torch::Tensor> ibpBounds = node->computeIntervalBoundPropagation(inputBounds);
 
-        // Store IBP bounds
-        _ibpBounds[nodeIndex] = ibpBounds;
+        // Store IBP bounds (detached to prevent gradient history from leaking across iterations)
+        // IBP bounds are fixed reference bounds and don't participate in gradient optimization
+        _ibpBounds[nodeIndex] = BoundedTensor<torch::Tensor>(
+            ibpBounds.lower().detach(),
+            ibpBounds.upper().detach());
     }
 
     log(Stringf("computeIBPBounds() - Completed, stored bounds for %u nodes", _ibpBounds.size()));
@@ -442,18 +304,11 @@ bool CROWNAnalysis::getAlphaStartCacheInfo(const std::string& key,
     return true;
 }
 
-// Global counter for backward passes
-// static int _backward_from_counter = 0;
-
 void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& unstableIndices, const torch::Tensor* C)
 {
     unsigned current_dbg = startIndex;
     std::string stage = "start";
     try {
-    // Increment and print counter
-    // _backward_from_counter++;
-    // printf("[C++ COUNTER] backwardFrom call #%d: startIndex=%u\n", _backward_from_counter, startIndex);
-
     stage = "checkStartIndexExists";
     if ( !_nodes.exists(startIndex) ) {
         log(Stringf("backwardFrom() - Warning: start index %u not found in nodes.", startIndex));
@@ -698,11 +553,12 @@ void CROWNAnalysis::backwardFrom(unsigned startIndex, const Vector<unsigned>& un
             }
             continue;
         }
-        
+
+        // Input bounds are already computed by checkPriorBounds() before backwardFrom()
+        // (auto_LiRPA style: check_prior_bounds is called before backward_general)
 
         stage = "node.boundBackward";
         node->boundBackward(currentLowerAlpha, currentUpperAlpha, inputBounds, A_matrices, lbias, ubias);
-
 
         // No need to set intermediate bounds here - they're already set in run()
         // IBP bounds are used for linear/conv, CROWN for ReLUs
@@ -962,6 +818,11 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
         if (_ibpBounds.exists(startIndex)) {
             _concreteBounds[startIndex] = _ibpBounds[startIndex];
             _torchModel->setConcreteBounds(startIndex, _ibpBounds[startIndex]);
+            // Store bounds in node (auto_LiRPA style)
+            if (_nodes.exists(startIndex)) {
+                _nodes[startIndex]->setBounds(_ibpBounds[startIndex].lower(),
+                                              _ibpBounds[startIndex].upper());
+            }
             log(Stringf("concretizeNode() - Stored IBP bounds as concrete bounds for node %u", startIndex));
         } else {
             log(Stringf("concretizeNode() - WARNING: No IBP bounds available for node %u", startIndex));
@@ -994,6 +855,11 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
         if (_ibpBounds.exists(startIndex)) {
             _concreteBounds[startIndex] = _ibpBounds[startIndex];
             _torchModel->setConcreteBounds(startIndex, _ibpBounds[startIndex]);
+            // Store bounds in node (auto_LiRPA style)
+            if (_nodes.exists(startIndex)) {
+                _nodes[startIndex]->setBounds(_ibpBounds[startIndex].lower(),
+                                              _ibpBounds[startIndex].upper());
+            }
             log(Stringf("concretizeNode() - Stored IBP bounds as concrete bounds for node %u", startIndex));
         } else {
             log(Stringf("concretizeNode() - WARNING: No IBP bounds available for node %u", startIndex));
@@ -1119,6 +985,11 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
             if (_ibpBounds.exists(startIndex)) {
                 _concreteBounds[startIndex] = _ibpBounds[startIndex];
                 _torchModel->setConcreteBounds(startIndex, _ibpBounds[startIndex]);
+                // Store bounds in node (auto_LiRPA style)
+                if (_nodes.exists(startIndex)) {
+                    _nodes[startIndex]->setBounds(_ibpBounds[startIndex].lower(),
+                                                  _ibpBounds[startIndex].upper());
+                }
             }
             return;
         }
@@ -1240,6 +1111,10 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
         BoundedTensor<torch::Tensor> concreteBounds(concreteLower, concreteUpper);
         _concreteBounds[startIndex] = concreteBounds;
         _torchModel->setConcreteBounds(startIndex, concreteBounds);
+        // Store bounds in node (auto_LiRPA style)
+        if (_nodes.exists(startIndex)) {
+            _nodes[startIndex]->setBounds(concreteLower, concreteUpper);
+        }
         log(Stringf("concretizeNode() - Stored CROWN concrete bounds for node %u", startIndex));
 
     } else {
@@ -1247,6 +1122,11 @@ void CROWNAnalysis::concretizeNode(unsigned startIndex, const Vector<unsigned>& 
         if (_ibpBounds.exists(startIndex)) {
             _concreteBounds[startIndex] = _ibpBounds[startIndex];
             _torchModel->setConcreteBounds(startIndex, _ibpBounds[startIndex]);
+            // Store bounds in node (auto_LiRPA style)
+            if (_nodes.exists(startIndex)) {
+                _nodes[startIndex]->setBounds(_ibpBounds[startIndex].lower(),
+                                              _ibpBounds[startIndex].upper());
+            }
         }
     }
 
@@ -1375,15 +1255,16 @@ Vector<BoundedTensor<torch::Tensor>> CROWNAnalysis::getInputBoundsForNode(unsign
                 }
                 source = "input";
             } else {
-                // First check for fixed intermediate bounds (alpha-CROWN best bounds tracking)
-                auto fixedIt = _fixedConcreteBounds.find(inputIndex);
-                if (fixedIt != _fixedConcreteBounds.end()) {
-                    lower = fixedIt->second.first;
-                    upper = fixedIt->second.second;
-                    source = "fixed";
-                }
-                // Otherwise prefer CROWN concrete bounds in standard mode; otherwise IBP
-                else if (LunaConfiguration::USE_STANDARD_CROWN && _concreteBounds.exists(inputIndex)) {
+                // Priority order for bounds retrieval (matching auto_LiRPA pattern):
+                // 1. Node bounds (restored/computed CROWN bounds stored in node._lower/._upper)
+                // 2. _concreteBounds map (CROWN bounds from current run)
+                // 3. _ibpBounds map (fallback to IBP)
+                // 4. Default zeros/ones
+                if (node->hasBounds()) {
+                    lower = node->getLower();
+                    upper = node->getUpper();
+                    source = "node";
+                } else if (LunaConfiguration::USE_STANDARD_CROWN && _concreteBounds.exists(inputIndex)) {
                     lower = _concreteBounds[inputIndex].lower();
                     upper = _concreteBounds[inputIndex].upper();
                     source = "crown";
@@ -1806,7 +1687,20 @@ void CROWNAnalysis::resetProcessingState()
 
 void CROWNAnalysis::clearConcreteBounds()
 {
-    _torchModel->clearConcreteBounds();
+    _concreteBounds.clear();  // Clear CROWNAnalysis's own map
+    _torchModel->clearConcreteBounds();  // Also clear TorchModel's map
+}
+
+void CROWNAnalysis::clearAllNodeBounds()
+{
+    // Clear bounds stored directly in nodes (node._lower/node._upper)
+    // This is important when starting a new optimization run to prevent
+    // gradient history from previous runs from leaking into the new computation graph
+    for (auto& [nodeIdx, node] : _nodes) {
+        if (node) {
+            node->clearBounds();
+        }
+    }
 }
 
 void CROWNAnalysis::markProcessed(unsigned nodeIndex)
@@ -1890,9 +1784,14 @@ unsigned CROWNAnalysis::getOutputSize() const
     return _torchModel->getOutputSize();
 }
 
-// Concrete bound access methods
+// Concrete bound access methods (auto_LiRPA style: check node properties first)
 torch::Tensor CROWNAnalysis::getConcreteLowerBound(unsigned nodeIndex)
 {
+    // Check node-based storage first (auto_LiRPA style)
+    if (_nodes.exists(nodeIndex) && _nodes[nodeIndex]->hasBounds()) {
+        return _nodes[nodeIndex]->getLower();
+    }
+    // Fallback to map-based storage
     if (_concreteBounds.exists(nodeIndex)) {
         return _concreteBounds[nodeIndex].lower();
     }
@@ -1901,6 +1800,11 @@ torch::Tensor CROWNAnalysis::getConcreteLowerBound(unsigned nodeIndex)
 
 torch::Tensor CROWNAnalysis::getConcreteUpperBound(unsigned nodeIndex)
 {
+    // Check node-based storage first (auto_LiRPA style)
+    if (_nodes.exists(nodeIndex) && _nodes[nodeIndex]->hasBounds()) {
+        return _nodes[nodeIndex]->getUpper();
+    }
+    // Fallback to map-based storage
     if (_concreteBounds.exists(nodeIndex)) {
         return _concreteBounds[nodeIndex].upper();
     }
@@ -1909,21 +1813,12 @@ torch::Tensor CROWNAnalysis::getConcreteUpperBound(unsigned nodeIndex)
 
 bool CROWNAnalysis::hasConcreteBounds(unsigned nodeIndex)
 {
+    // Check node-based storage first (auto_LiRPA style)
+    if (_nodes.exists(nodeIndex) && _nodes[nodeIndex]->hasBounds()) {
+        return true;
+    }
+    // Fallback to map-based storage
     return _concreteBounds.exists(nodeIndex);
-}
-
-void CROWNAnalysis::setFixedConcreteBounds(unsigned nodeIndex, const torch::Tensor& lower, const torch::Tensor& upper)
-{
-    const torch::Device device = _torchModel->getDevice();
-    torch::Tensor lowerOnDevice = lower.defined() ? lower.to(device) : lower;
-    torch::Tensor upperOnDevice = upper.defined() ? upper.to(device) : upper;
-    _fixedConcreteBounds[nodeIndex] = std::make_pair(lowerOnDevice.detach().clone(),
-                                                     upperOnDevice.detach().clone());
-}
-
-void CROWNAnalysis::clearFixedConcreteBounds()
-{
-    _fixedConcreteBounds.clear();
 }
 
 // Output bound access methods
@@ -2110,6 +2005,150 @@ bool CROWNAnalysis::isFirstLinearLayer(unsigned nodeIndex)
     
     // The dependency must be an input node
     return _nodes[inputNodeIndex]->getNodeType() == NodeType::INPUT;
+}
+
+// =========================================================================
+// Lazy intermediate bound computation methods (auto_LiRPA style)
+// =========================================================================
+
+// Check if IBP can be used for intermediate bounds
+// Matches auto_LiRPA's check_IBP_intermediate (interval_bound.py:152-195)
+bool CROWNAnalysis::checkIBPIntermediate(unsigned nodeIndex)
+{
+    // Walk backward from nodeIndex - if all nodes have ibpIntermediate=true, use IBP
+    unsigned current = nodeIndex;
+    Vector<unsigned> nodesToProcess;
+
+    while (!hasConcreteBounds(current)) {
+        if (!_nodes.exists(current)) break;
+        if (!_nodes[current]->isIBPIntermediate()) return false;  // Need CROWN
+
+        nodesToProcess.append(current);
+
+        // Get dependencies
+        if (!_torchModel->getDependenciesMap().exists(current)) break;
+        const Vector<unsigned>& deps = _torchModel->getDependencies(current);
+        if (deps.empty()) break;
+        current = deps[0];  // Follow first dependency
+    }
+
+    // All nodes support IBP - compute IBP bounds for the chain (from leaves to nodeIndex)
+    for (int i = (int)nodesToProcess.size() - 1; i >= 0; i--) {
+        computeIBPForNode(nodesToProcess[i]);
+    }
+    return true;
+}
+
+// Compute IBP bounds for a single node
+void CROWNAnalysis::computeIBPForNode(unsigned nodeIndex)
+{
+    if (!_nodes.exists(nodeIndex)) return;
+    if (hasConcreteBounds(nodeIndex)) return;  // Already computed
+
+    auto& node = _nodes[nodeIndex];
+
+    // Get input bounds for this node
+    Vector<BoundedTensor<torch::Tensor>> inputBounds = getInputBoundsForNode(nodeIndex);
+
+    // Compute IBP bounds
+    BoundedTensor<torch::Tensor> ibp = node->computeIntervalBoundPropagation(inputBounds);
+
+    // Store in node (auto_LiRPA style)
+    node->setBounds(ibp.lower(), ibp.upper());
+
+    // Also store in maps for backward compatibility
+    _ibpBounds[nodeIndex] = ibp;
+    _concreteBounds[nodeIndex] = ibp;
+    _torchModel->setConcreteBounds(nodeIndex, ibp);
+}
+
+// Compute intermediate bounds lazily
+// Matches auto_LiRPA's compute_intermediate_bounds (bound_general.py:970-1097)
+void CROWNAnalysis::computeIntermediateBoundsLazy(unsigned nodeIndex)
+{
+    // Early exit if bounds already computed
+    if (hasConcreteBounds(nodeIndex)) return;
+
+    // Try IBP fast paths first
+    if (checkIBPIntermediate(nodeIndex)) return;  // Used IBP
+    if (checkIBPFirstLinear(nodeIndex)) {
+        // First linear layer - IBP is exact, just compute IBP for it
+        computeIBPForNode(nodeIndex);
+        return;
+    }
+
+    // =========================================================================
+    // Identify unstable neurons (auto_LiRPA style)
+    // Matches auto_LiRPA's compute_intermediate_bounds logic where unstable
+    // neurons are identified before calling backward_general
+    // =========================================================================
+    Vector<unsigned> unstableIndices;
+
+    // Get IBP bounds for this node (should exist from initial IBP pass)
+    if (_ibpBounds.exists(nodeIndex)) {
+        torch::Tensor lb = _ibpBounds[nodeIndex].lower().flatten();
+        torch::Tensor ub = _ibpBounds[nodeIndex].upper().flatten();
+
+        // Unstable neurons: where lb < 0 AND ub > 0
+        torch::Tensor unstableMask = (lb < 0) & (ub > 0);
+
+        // Get indices of unstable neurons
+        torch::Tensor indices = torch::nonzero(unstableMask).flatten();
+
+        // Convert to Vector<unsigned> for backwardFrom
+        if (indices.numel() > 0) {
+            auto indices_cpu = indices.to(torch::kCPU).to(torch::kLong);
+            auto acc = indices_cpu.accessor<int64_t, 1>();
+            for (int64_t i = 0; i < acc.size(0); ++i) {
+                unstableIndices.append(static_cast<unsigned>(acc[i]));
+            }
+        }
+
+        log(Stringf("computeIntermediateBoundsLazy() - Node %u has %u unstable neurons out of %lld total",
+                    nodeIndex, unstableIndices.size(), (long long)lb.numel()));
+    }
+
+    // Set current start context for this intermediate node
+    auto& node = _nodes[nodeIndex];
+    unsigned nodeSize = node->getOutputSize();
+    std::string startKey = "/" + std::to_string(nodeIndex);
+    _setCurrentStart(startKey, static_cast<int>(unstableIndices.empty() ? nodeSize : unstableIndices.size()));
+    _currentStartSpecIndices = unstableIndices;
+
+    // Fall back to CROWN backward pass for this specific node
+    // Pass unstable indices for selective computation
+    backwardFrom(nodeIndex, unstableIndices);
+    concretizeNode(nodeIndex, unstableIndices);
+}
+
+// Check prior bounds - triggers lazy computation for nodes with requiresInputBounds
+// Matches auto_LiRPA's check_prior_bounds (bound_general.py:923-968)
+void CROWNAnalysis::checkPriorBounds(unsigned nodeIndex)
+{
+    if (!_nodes.exists(nodeIndex)) return;
+    auto& node = _nodes[nodeIndex];
+
+    // Get dependencies
+    if (!_torchModel->getDependenciesMap().exists(nodeIndex)) return;
+    const Vector<unsigned>& deps = _torchModel->getDependencies(nodeIndex);
+
+    // Step 1: Recursively check prior bounds for ALL input nodes
+    // (auto_LiRPA walks the entire graph from output to input)
+    for (unsigned i = 0; i < deps.size(); ++i) {
+        unsigned inputNode = deps[i];
+        checkPriorBounds(inputNode);  // Recursive call
+    }
+
+    // Step 2: For inputs that require bounds, compute intermediate bounds
+    const Vector<unsigned>& requiredInputs = node->getRequiresInputBounds();
+    for (unsigned i = 0; i < requiredInputs.size(); ++i) {
+        unsigned inputIdx = requiredInputs[i];
+        if (inputIdx < deps.size()) {
+            unsigned inputNode = deps[inputIdx];
+            // LAZY: Compute bounds for this input if not already done
+            computeIntermediateBoundsLazy(inputNode);
+        }
+    }
 }
 
 void CROWNAnalysis::setInputBounds(const BoundedTensor<torch::Tensor>& inputBounds) {

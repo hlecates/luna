@@ -75,12 +75,68 @@ public:
         this->to(device);
     }
 
+    // =========================================================================
+    // Node-based bound storage (auto_LiRPA style: node.lower/node.upper pattern)
+    // =========================================================================
+
+    // Bound accessors (matching auto_LiRPA's property pattern)
+    const torch::Tensor& getLower() const { return _lower; }
+    const torch::Tensor& getUpper() const { return _upper; }
+
+    void setLower(const torch::Tensor& value) {
+        _lower = value;
+        _isLowerBoundCurrent = true;
+    }
+
+    void setUpper(const torch::Tensor& value) {
+        _upper = value;
+        _isUpperBoundCurrent = true;
+    }
+
+    void setBounds(const torch::Tensor& lower, const torch::Tensor& upper) {
+        _lower = lower;
+        _upper = upper;
+        _isLowerBoundCurrent = true;
+        _isUpperBoundCurrent = true;
+    }
+
+    void clearBounds() {
+        _lower = torch::Tensor();
+        _upper = torch::Tensor();
+        _isLowerBoundCurrent = false;
+        _isUpperBoundCurrent = false;
+    }
+
+    bool isLowerBoundCurrent() const { return _isLowerBoundCurrent; }
+    bool isUpperBoundCurrent() const { return _isUpperBoundCurrent; }
+    bool hasBounds() const { return _isLowerBoundCurrent && _isUpperBoundCurrent; }
+
+    // =========================================================================
+    // Lazy bound computation flags (auto_LiRPA style)
+    // =========================================================================
+
+    // Which inputs require bounds for this node (e.g., ReLU needs bounds on input 0)
+    const Vector<unsigned>& getRequiresInputBounds() const { return _requiresInputBounds; }
+
+    // Whether this node can use IBP for intermediate bounds (e.g., ReLU can)
+    bool isIBPIntermediate() const { return _ibpIntermediate; }
+
 protected:
     unsigned _nodeIndex;
     String _nodeName;
     unsigned _input_size;
     unsigned _output_size;
     torch::Device _device{torch::kCPU};
+
+    // Bound storage (models auto_LiRPA's node.lower/node.upper pattern)
+    torch::Tensor _lower;
+    torch::Tensor _upper;
+    bool _isLowerBoundCurrent{false};
+    bool _isUpperBoundCurrent{false};
+
+    // Lazy computation flags (set in derived class constructors)
+    Vector<unsigned> _requiresInputBounds;  // Which input indices need bounds
+    bool _ibpIntermediate{false};           // Can use IBP for this node's bounds
 };
 
 } // namespace NLR

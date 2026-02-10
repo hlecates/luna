@@ -62,10 +62,6 @@ public:
     torch::Tensor getConcreteUpperBound(unsigned nodeIndex);
     bool hasConcreteBounds(unsigned nodeIndex);
 
-    // Fixed intermediate bounds (for alpha-CROWN best bounds tracking)
-    void setFixedConcreteBounds(unsigned nodeIndex, const torch::Tensor& lower, const torch::Tensor& upper);
-    void clearFixedConcreteBounds();
-
     // Output bound access methods
     BoundedTensor<torch::Tensor> getOutputBounds() const;
     BoundedTensor<torch::Tensor> getOutputIBPBounds() const;
@@ -79,6 +75,7 @@ public:
     // Processing state
     void resetProcessingState();
     void clearConcreteBounds();
+    void clearAllNodeBounds();  // Clear bounds stored in all nodes (node._lower/._upper)
     void markProcessed(unsigned nodeIndex);
     bool isProcessed(unsigned nodeIndex) const;
 
@@ -86,6 +83,22 @@ public:
     bool checkIBPFirstLinear(unsigned nodeIndex);
     bool isFirstLinearLayer(unsigned nodeIndex);
     // Configuration gating: use LunaConfiguration::ENABLE_FIRST_LINEAR_IBP directly
+
+    // =========================================================================
+    // Lazy intermediate bound computation (auto_LiRPA style)
+    // =========================================================================
+
+    // Check if IBP can be used for intermediate bounds (walks backward checking ibpIntermediate flags)
+    bool checkIBPIntermediate(unsigned nodeIndex);
+
+    // Compute intermediate bounds lazily - called when a node needs bounds on its inputs
+    void computeIntermediateBoundsLazy(unsigned nodeIndex);
+
+    // Check prior bounds - triggers lazy computation for nodes with requiresInputBounds
+    void checkPriorBounds(unsigned nodeIndex);
+
+    // Compute IBP bounds for a single node (used by lazy computation)
+    void computeIBPForNode(unsigned nodeIndex);
 
 
     void computeIBPBounds();
@@ -166,9 +179,6 @@ private:
 
     // Concrete Bounds
     Map<unsigned, BoundedTensor<torch::Tensor>> _concreteBounds;
-
-    // Fixed intermediate bounds (for alpha-CROWN best bounds tracking)
-    std::unordered_map<unsigned, std::pair<torch::Tensor, torch::Tensor>> _fixedConcreteBounds;
 
     // Forward value for concretizing bounds
     Map<unsigned, torch::Tensor> _forwardPassValues;

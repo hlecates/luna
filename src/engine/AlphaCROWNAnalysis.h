@@ -228,22 +228,6 @@ private:
         const torch::Tensor& input_lb,
         const torch::Tensor& input_ub);
     
-    // Optimization phase methods
-    
-    /* DEPRECATED - Optimization loop now in TorchModel
-    std::pair<torch::Tensor, torch::Tensor> runOptimizationLoop(
-        const torch::Tensor& input,
-        const torch::Tensor& specificationMatrix,
-        bool computeLowerBounds,
-        bool computeUpperBounds
-    );
-
-    std::shared_ptr<torch::optim::Optimizer> createOptimizerLower();
-    std::shared_ptr<torch::optim::Optimizer> createOptimizerUpper();
-
-    void updateOptimizerLearningRate(std::shared_ptr<torch::optim::Optimizer>& optimizer);
-    */
-    
     // Update best alphas for improvements (for specific bound side)
     void updateBestAlphas(const std::vector<int>& improvedIndices, bool isLower);
 
@@ -257,7 +241,7 @@ private:
     // Best intermediate bounds tracking (following auto-LiRPA)
     void snapshotBestIntermediateBounds();
     void restoreBestIntermediateBounds();
-    
+
     torch::Tensor computeLoss(const torch::Tensor& lowerBounds,
                              const torch::Tensor& upperBounds,
                              bool optimizeLower,

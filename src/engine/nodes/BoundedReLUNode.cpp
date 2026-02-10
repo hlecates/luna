@@ -15,6 +15,10 @@ BoundedReLUNode::BoundedReLUNode(const torch::nn::ReLU& reluModule, const String
     _nodeIndex = 0;
     _input_size = 0;
     _output_size = 0;
+
+    // Lazy computation flags (auto_LiRPA style)
+    _requiresInputBounds.append(0);  // ReLU needs bounds on input 0 for relaxation
+    _ibpIntermediate = true;          // ReLU can use IBP for intermediate bounds
 }
 
 // Forward pass through the ReLU layer
@@ -57,6 +61,9 @@ void BoundedReLUNode::boundBackward(
     torch::Tensor input_lower = inputBound.lower();
     torch::Tensor input_upper = inputBound.upper();
 
+    const BoundA& effective_lA = last_lA;
+    const BoundA& effective_uA = last_uA;
+
     // Extract live spec dimension from last_lA or last_uA for per-spec alpha
     int specDim = 1;
     auto inferSpecDim = [](const BoundA& A) -> int {
@@ -72,18 +79,18 @@ void BoundedReLUNode::boundBackward(
         if (t.dim() == 2) return (int)t.size(0);
         return 1;
     };
-    if (last_lA.defined() && last_lA.isTensor()) {
-        specDim = inferSpecDim(last_lA);
-    } else if (last_uA.defined() && last_uA.isTensor()) {
-        specDim = inferSpecDim(last_uA);
+    if (effective_lA.defined() && effective_lA.isTensor()) {
+        specDim = inferSpecDim(effective_lA);
+    } else if (effective_uA.defined() && effective_uA.isTensor()) {
+        specDim = inferSpecDim(effective_uA);
     }
     _currentSpecDim = specDim;  // Store for use in _maskAlpha
 
     // DEBUG: Print spec dimension
     if (LunaConfiguration::VERBOSE) {
         printf("[DEBUG BoundedReLUNode::backward] node=%u, specDim=%d", getNodeIndex(), specDim);
-        if (last_lA.defined() && last_lA.isTensor()) {
-            auto t = last_lA.asTensor();
+        if (effective_lA.defined() && effective_lA.isTensor()) {
+            auto t = effective_lA.asTensor();
             printf(", lA.dim=%d, lA.shape=[", (int)t.dim());
             for (int i = 0; i < t.dim(); ++i) {
                 if (i > 0) printf(",");
@@ -95,8 +102,8 @@ void BoundedReLUNode::boundBackward(
     }
 
     // Call the unified backward relaxation method
-    auto relaxation_result = _backwardRelaxation(last_lA, last_uA, input_lower, input_upper);
-    
+    auto relaxation_result = _backwardRelaxation(effective_lA, effective_uA, input_lower, input_upper);
+
     // Helper lambdas
     auto expand_like = [](torch::Tensor v, const torch::Tensor& A) {
         if (!v.defined() || !A.defined()) return v;
@@ -196,14 +203,14 @@ void BoundedReLUNode::boundBackward(
     BoundA new_lA, new_uA;
 
     // ----- LOWER path -----
-    if (last_lA.defined()) {
+    if (effective_lA.defined()) {
         auto aL_l = relaxation_result.lb_lower_d.defined() ? relaxation_result.lb_lower_d : relaxation_result.d_lower;
         auto aU_l = relaxation_result.lb_upper_d.defined() ? relaxation_result.lb_upper_d : relaxation_result.d_upper;
         auto bL_l = relaxation_result.bias_lower.defined() ? relaxation_result.bias_lower : torch::zeros_like(input_lower);
         auto bU_l = relaxation_result.bias_upper.defined() ? relaxation_result.bias_upper : torch::zeros_like(input_lower);
 
-        if (last_lA.isTensor()) {
-            torch::Tensor lA = last_lA.asTensor();
+        if (effective_lA.isTensor()) {
+            torch::Tensor lA = effective_lA.asTensor();
             auto Apos = torch::clamp_min(lA, 0);
             auto Aneg = torch::clamp_max(lA, 0);
 
@@ -215,11 +222,11 @@ void BoundedReLUNode::boundBackward(
             lbias = lbias.defined() ? (lbias + add_lbias) : add_lbias;
         } else {
             // Patches mode
-            auto patches = last_lA.asPatches();
+            auto patches = effective_lA.asPatches();
             
             // maybe_unfold_patches
-            torch::Tensor aL_l_unfolded = maybe_unfold_patches(aL_l, last_lA);
-            torch::Tensor aU_l_unfolded = maybe_unfold_patches(aU_l, last_lA);
+            torch::Tensor aL_l_unfolded = maybe_unfold_patches(aL_l, effective_lA);
+            torch::Tensor aU_l_unfolded = maybe_unfold_patches(aU_l, effective_lA);
             
             // Patches doesn't support clamp directly on object, need to use patches tensor
             torch::Tensor P = patches->patches;
@@ -268,7 +275,7 @@ void BoundedReLUNode::boundBackward(
     }
 
     // ----- UPPER path -----
-    if (last_uA.defined()) {
+    if (effective_uA.defined()) {
         auto aU_u = relaxation_result.ub_upper_d.defined() ? relaxation_result.ub_upper_d : relaxation_result.d_upper;
         // Use ub_lower_d for upper-path A<0 (matches auto_LiRPA). Fall back to standard lower slope if not set.
         auto aL_u = relaxation_result.ub_lower_d.defined() ? relaxation_result.ub_lower_d
@@ -276,8 +283,8 @@ void BoundedReLUNode::boundBackward(
         auto bU_u = relaxation_result.bias_upper.defined() ? relaxation_result.bias_upper : torch::zeros_like(input_lower);
         auto bL_u = relaxation_result.bias_lower.defined() ? relaxation_result.bias_lower : torch::zeros_like(input_lower);
 
-        if (last_uA.isTensor()) {
-            torch::Tensor uA = last_uA.asTensor();
+        if (effective_uA.isTensor()) {
+            torch::Tensor uA = effective_uA.asTensor();
             auto Apos = torch::clamp_min(uA, 0);
             auto Aneg = torch::clamp_max(uA, 0);
 
@@ -289,11 +296,11 @@ void BoundedReLUNode::boundBackward(
             ubias = ubias.defined() ? (ubias + add_ubias) : add_ubias;
         } else {
             // Patches mode
-            auto patches = last_uA.asPatches();
+            auto patches = effective_uA.asPatches();
             
             // maybe_unfold_patches
-            torch::Tensor aU_u_unfolded = maybe_unfold_patches(aU_u, last_uA);
-            torch::Tensor aL_u_unfolded = maybe_unfold_patches(aL_u, last_uA);
+            torch::Tensor aU_u_unfolded = maybe_unfold_patches(aU_u, effective_uA);
+            torch::Tensor aL_u_unfolded = maybe_unfold_patches(aL_u, effective_uA);
             
             torch::Tensor P = patches->patches;
             torch::Tensor Ppos = torch::clamp_min(P, 0);
@@ -659,64 +666,6 @@ void BoundedReLUNode::_maskAlpha(const torch::Tensor& input_lower, const torch::
             // Skip the standard masking below since we've already set everything
             return;
         }
-
-    }
-
-skip_alpha:
-    // Standard CROWN relaxation (no alpha optimization)
-    // Flatten tensors for consistent shape handling
-    auto upper_d_flat = upper_d.flatten();
-    auto d_lower_flat = result.d_lower.flatten();
-    auto d_upper_flat = result.d_upper.flatten();
-    auto bias_lower_flat = result.bias_lower.flatten();
-    auto bias_upper_flat = result.bias_upper.flatten();
-
-    // Apply upper bound slopes (secant line for unstable neurons)
-    d_upper_flat = torch::where(unstable, upper_d_flat, d_upper_flat);
-    auto bU = -input_lb_flat * upper_d_flat;
-    bias_upper_flat = torch::where(unstable, bU, bias_upper_flat);
-
-    // Apply masking for stable neurons
-    d_lower_flat = torch::where(always_active_mask, torch::ones_like(d_lower_flat), d_lower_flat);
-    d_lower_flat = torch::where(always_inactive_mask, torch::zeros_like(d_lower_flat), d_lower_flat);
-    bias_lower_flat = torch::where(always_active_mask | always_inactive_mask,
-                                   torch::zeros_like(bias_lower_flat), bias_lower_flat);
-
-    d_upper_flat = torch::where(always_active_mask, torch::ones_like(d_upper_flat), d_upper_flat);
-    d_upper_flat = torch::where(always_inactive_mask, torch::zeros_like(d_upper_flat), d_upper_flat);
-    bias_upper_flat = torch::where(always_active_mask | always_inactive_mask,
-                                   torch::zeros_like(bias_upper_flat), bias_upper_flat);
-
-    // Write back the flattened results
-    result.d_lower = d_lower_flat;
-    result.d_upper = d_upper_flat;
-    result.bias_lower = bias_lower_flat;
-    result.bias_upper = bias_upper_flat;
-
-    // For per-spec tensors (if defined from a previous alpha pass that was skipped)
-    if (result.lb_lower_d.defined() && result.lb_lower_d.dim() == 2) {
-        int specDim = result.lb_lower_d.size(0);
-        auto always_active_expanded = always_active_mask.unsqueeze(0).expand({specDim, outDim});
-        auto always_inactive_expanded = always_inactive_mask.unsqueeze(0).expand({specDim, outDim});
-
-        result.lb_lower_d = torch::where(always_active_expanded,
-                                         torch::ones_like(result.lb_lower_d),
-                                         result.lb_lower_d);
-        result.lb_lower_d = torch::where(always_inactive_expanded,
-                                         torch::zeros_like(result.lb_lower_d),
-                                         result.lb_lower_d);
-    }
-    if (result.lb_upper_d.defined() && result.lb_upper_d.dim() == 2) {
-        int specDim = result.lb_upper_d.size(0);
-        auto always_active_expanded = always_active_mask.unsqueeze(0).expand({specDim, outDim});
-        auto always_inactive_expanded = always_inactive_mask.unsqueeze(0).expand({specDim, outDim});
-
-        result.lb_upper_d = torch::where(always_active_expanded,
-                                         torch::ones_like(result.lb_upper_d),
-                                         result.lb_upper_d);
-        result.lb_upper_d = torch::where(always_inactive_expanded,
-                                         torch::zeros_like(result.lb_upper_d),
-                                         result.lb_upper_d);
     }
 }
 

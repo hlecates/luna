@@ -618,13 +618,14 @@ Map<unsigned, torch::Tensor> TorchModel::forwardAndStoreActivations(const Map<un
 
 void TorchModel::setInputBounds(const BoundedTensor<torch::Tensor>& inputBounds) {
     log(Stringf("[TorchModel] Setting input bounds"));
-    
+
     // Store the input bounds in the TorchModel
+    // Detach to ensure no gradient history is retained (input bounds are constants)
     _inputBounds = BoundedTensor<torch::Tensor>(
-        inputBounds.lower().to(_device),
-        inputBounds.upper().to(_device));
-    
-    log(Stringf("[TorchModel] Input bounds set with shape: %s", 
+        inputBounds.lower().detach().to(_device),
+        inputBounds.upper().detach().to(_device));
+
+    log(Stringf("[TorchModel] Input bounds set with shape: %s",
                 inputBounds.lower().sizes().vec().data()));
 }
 

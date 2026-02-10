@@ -210,10 +210,6 @@ int lunaMain(int argc, char* argv[]) {
     }
 
     try {
-        // Force single-threaded execution for numerical determinism
-        at::set_num_threads(1);
-        at::set_num_interop_threads(1);
-        
         if (LunaConfiguration::VERBOSE) {
             std::cout << "Set threads to 1 for deterministic results" << std::endl;
         }

@@ -11,28 +11,6 @@
 
 namespace NLR {
 
-// Helper function to get first N elements of a tensor as a string
-static std::string tensorFirstN(const torch::Tensor& tensor, int n = 10) {
-    if (!tensor.defined() || tensor.numel() == 0) {
-        return "[]";
-    }
-    
-    auto flat = tensor.flatten();
-    int count = std::min(n, (int)flat.numel());
-    
-    std::ostringstream oss;
-    oss << "[";
-    for (int i = 0; i < count; ++i) {
-        if (i > 0) oss << ", ";
-        oss << std::fixed << std::setprecision(6) << flat[i].item<float>();
-    }
-    if (flat.numel() > count) {
-        oss << ", ...";
-    }
-    oss << "]";
-    return oss.str();
-}
-
 AlphaCROWNAnalysis::AlphaCROWNAnalysis(TorchModel* torchModel)
     : _torchModel(torchModel)
     , _alphaEnabled(true)
@@ -286,7 +264,6 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
             spec_mismatch = (storedSpecDim != specDim)
                 && !(ap.hasSpecDefaultSlot && storedSpecDim == specDim + 1);
         }
-        bool unstable_mismatch = (ap.numUnstable != numUnstable);
         if (spec_mismatch) {
             // Spec dimension mismatch requires re-creation.
             perStart.erase(it);
@@ -380,6 +357,7 @@ AlphaParameters& AlphaCROWNAnalysis::ensureAlphaFor(
 
         params.alpha = alpha;
         perStart[startKey] = std::move(params);
+
     }
     return perStart[startKey];
 }
@@ -409,6 +387,15 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
     // Reset alpha parameters from CROWN slopes for this bound side
     resetAlphasFromCROWNSlopes(isLower);
 
+    // Clear best intermediate bounds from previous optimization run
+    // Each optimization (lower/upper) should start fresh with its own best bounds tracking
+    _bestIntermediateBounds.clear();
+
+    // Clear node bounds (node._lower/node._upper) to prevent gradient history leakage
+    // from previous optimization runs
+    _crownAnalysis->clearAllNodeBounds();
+    log("computeOptimizedBounds() - Cleared best intermediate bounds and node bounds for fresh optimization");
+
     // Set optimization stage
     setOptimizationStage("opt");
 
@@ -420,8 +407,12 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
     // Enable gradients for this initial pass to ensure alpha parameters are created with gradient tracking
     _crownAnalysis->setAlphaStartCacheEnabled(true);
     _crownAnalysis->clearConcreteBounds();
+    _crownAnalysis->clearCrownState();  // Clear A matrices and biases from previous optimization
     _crownAnalysis->resetProcessingState();
     _crownAnalysis->run(true); // Enable gradients for Alpha-CROWN
+
+    // Snapshot initial intermediate bounds (auto_LiRPA fix_interm_bounds=True behavior)
+    snapshotBestIntermediateBounds();
 
     // Extract initial CROWN bounds (before optimization) for comparison
     torch::Tensor initialLower = extractLowerBoundsFromCROWN();
@@ -444,7 +435,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
     }
     // Create optimizer for this bound side
     auto alphaParams = collectAlphaParameters(isLower);
-    
+
     // Log alpha parameter statistics
     if (!alphaParams.empty()) {
         int total_alpha_params = 0;
@@ -504,9 +495,12 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
             no_grad = std::make_unique<torch::NoGradGuard>();
         }
 
-        // Clear previous bounds and compute with current alphas
-        // Enable gradients for Alpha-CROWN optimization
+        // Clear previous bounds and force intermediate recomputation with current alphas.
+        // We still track/restore best intermediate bounds separately, but we do not pre-seed
+        // node bounds before each iteration so intermediate alpha parameters can influence
+        // the current iteration's relaxations.
         _crownAnalysis->clearConcreteBounds();
+        _crownAnalysis->clearAllNodeBounds();
         _crownAnalysis->resetProcessingState();
         _crownAnalysis->run(true); // Enable gradients for Alpha-CROWN
 
@@ -514,6 +508,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
         torch::Tensor currentLower = extractLowerBoundsFromCROWN();
         torch::Tensor currentUpper = extractUpperBoundsFromCROWN();
         torch::Tensor currentBound = isLower ? currentLower : currentUpper;
+
 
         // Compute current bound width (mean of upper - lower)
         float current_width = 0.0f;
@@ -596,9 +591,12 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
                         iter + 1, isLower ? "lower" : "upper", best_width));
         }
 
-        // Track best intermediate bounds every iteration (element-wise best)
-        // This captures the tightest pre-activation bounds seen across all iterations
-        snapshotBestIntermediateBounds();
+        // Track best intermediate bounds only when the current alpha state improves
+        // output bounds. This keeps intermediate snapshots aligned with alpha states
+        // that are actually useful for the objective.
+        if (improved) {
+            snapshotBestIntermediateBounds();
+        }
 
         // Track convergence for early stopping
         float current_loss = loss.defined() ? std::abs(loss.item<float>()) : 0.0f;
@@ -616,6 +614,11 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
 
         // Gradient step (except on last iteration)
         if (iter < _iteration - 1 && loss.defined()) {
+            if (!loss.requires_grad()) {
+                log(Stringf("computeOptimizedBounds() - Iter %u: loss has no grad_fn; stopping optimization early for %s bound",
+                            iter + 1, isLower ? "LOWER" : "UPPER"));
+                break;
+            }
             optimizer->zero_grad();
             loss.backward();
 
@@ -627,48 +630,7 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
             _crownAnalysis->clearConcreteBounds();
             _crownAnalysis->resetProcessingState();
 
-            // Diagnostic: Verify gradients are actually computed
-            bool has_gradients = false;
-            float total_grad_norm = 0.0f;
-            int params_with_grad = 0;
-            float max_grad = 0.0f;
-            float min_grad = 0.0f;
-            for (const auto& param : alphaParams) {
-                if (param.grad().defined() && param.grad().numel() > 0) {
-                    has_gradients = true;
-                    float grad_norm = param.grad().norm().item<float>();
-                    total_grad_norm += grad_norm;
-                    params_with_grad++;
-                    float grad_max = param.grad().max().item<float>();
-                    float grad_min = param.grad().min().item<float>();
-                    if (grad_max > max_grad) max_grad = grad_max;
-                    if (grad_min < min_grad) min_grad = grad_min;
-                }
-            }
-            
-            // Log gradient and loss statistics
-            if (loss.defined()) {
-                log(Stringf("computeOptimizedBounds() - Iter %u: loss=%.6f, has_gradients=%s, "
-                            "grad_norm=%.6f, grad_range=[%.6f, %.6f], params_with_grad=%d/%zu",
-                            iter + 1, loss.item<float>(), has_gradients ? "yes" : "no",
-                            total_grad_norm, min_grad, max_grad, params_with_grad, alphaParams.size()));
-            }
-
             optimizer->step();
-            
-            // Log alpha statistics after update
-            auto& storageMap = isLower ? _alphaByNodeStartLower : _alphaByNodeStartUpper;
-            for (auto& [nodeIdx, perStart] : storageMap) {
-                for (auto& [startKey, ap] : perStart) {
-                    if (ap.alpha.defined() && ap.alpha.numel() > 0 && iter == 0) {  // Log only first iteration to avoid spam
-                        log(Stringf("computeOptimizedBounds() - Iter %u: Node %u [%s] alpha after update: "
-                                    "min=%.6f, max=%.6f, mean=%.6f",
-                                    iter + 1, nodeIdx, startKey.c_str(),
-                                    ap.alpha.min().item<float>(), ap.alpha.max().item<float>(),
-                                    ap.alpha.mean().item<float>()));
-                    }
-                }
-            }
 
             // Clip alphas to [0,1]
             clipAlphaParameters();
@@ -685,8 +647,8 @@ torch::Tensor AlphaCROWNAnalysis::computeOptimizedBounds(LunaConfiguration::Boun
 
     // Restore best alphas and best intermediate bounds, then compute final bounds
     restoreBestAlphas(isLower);
-    restoreBestIntermediateBounds();
     _crownAnalysis->clearConcreteBounds();
+    restoreBestIntermediateBounds();
     _crownAnalysis->resetProcessingState();
     _crownAnalysis->run(false); // Final pass doesn't need gradients
 
@@ -921,15 +883,18 @@ void AlphaCROWNAnalysis::snapshotBestIntermediateBounds()
             auto it = _bestIntermediateBounds.find(nodeIdx);
             if (it != _bestIntermediateBounds.end()) {
                 // Element-wise merge: keep tightest bounds
+                // Detach to ensure no gradient history is preserved
                 torch::Tensor& storedLower = it->second.first;
                 torch::Tensor& storedUpper = it->second.second;
 
-                storedLower = torch::max(storedLower, currentLower).clone();
-                storedUpper = torch::min(storedUpper, currentUpper).clone();
+                storedLower = torch::max(storedLower, currentLower).detach().clone();
+                storedUpper = torch::min(storedUpper, currentUpper).detach().clone();
                 numNodesUpdated++;
             } else {
-                // First time seeing this node
-                _bestIntermediateBounds[nodeIdx] = std::make_pair(currentLower.clone(), currentUpper.clone());
+                // First time seeing this node - clone and detach to break gradient history
+                _bestIntermediateBounds[nodeIdx] = std::make_pair(
+                    currentLower.detach().clone(),
+                    currentUpper.detach().clone());
                 numNodesNew++;
             }
         }
@@ -943,20 +908,27 @@ void AlphaCROWNAnalysis::snapshotBestIntermediateBounds()
 
 void AlphaCROWNAnalysis::restoreBestIntermediateBounds()
 {
-    log("restoreBestIntermediateBounds() - Seeding best PRE-ACTIVATION bounds into CROWN analysis");
-
+    // Restore best intermediate bounds into CROWNAnalysis using node-based storage
+    // This matches auto_LiRPA's fix_interm_bounds=True behavior where intermediate
+    // bounds are fixed from the first computation and reused in subsequent iterations
     if (_bestIntermediateBounds.empty()) {
         return;
     }
 
-    // Seed the best pre-activation bounds into CROWNAnalysis
-    // These will be used by getInputBoundsForNode() to compute tighter ReLU secants
+    log("restoreBestIntermediateBounds() - Seeding best bounds into nodes");
+
+    unsigned numRestored = 0;
     for (const auto& [nodeIdx, bounds] : _bestIntermediateBounds) {
-        _crownAnalysis->setFixedConcreteBounds(nodeIdx, bounds.first, bounds.second);
+        // Store bounds in node (auto_LiRPA style: node.lower/node.upper)
+        // Detach to ensure no gradient history leaks into the new computation graph
+        auto node = _crownAnalysis->getNode(nodeIdx);
+        if (node) {
+            node->setBounds(bounds.first.detach(), bounds.second.detach());
+            numRestored++;
+        }
     }
 
-    log(Stringf("restoreBestIntermediateBounds() - Seeded bounds for %u pre-activation nodes",
-                (unsigned)_bestIntermediateBounds.size()));
+    log(Stringf("restoreBestIntermediateBounds() - Restored bounds for %u nodes", numRestored));
 }
 
 torch::Tensor AlphaCROWNAnalysis::computeLoss(const torch::Tensor& lowerBounds,
