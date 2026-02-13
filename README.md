@@ -64,7 +64,7 @@ luna/
 │   │   └── nodes/                # Per-layer bound implementations
 │   │       ├── BoundedLinearNode
 │   │       ├── BoundedConvNode
-│   │       ├── BoundedReLUNode   # Alpha-optimizable
+│   │       ├── BoundedReLUNode  
 │   │       ├── BoundedSigmoidNode
 │   │       └── ...               # 15+ node types
 │   ├── input_parsers/
@@ -75,7 +75,6 @@ luna/
 ├── lunapy/                       # Python bindings (pybind11)
 │   ├── lunapy.py                 # High-level Python API
 │   └── examples/                 # Tutorial examples
-├── auto_LiRPA/                   # Modified auto_LiRPA (reference/comparison)
 ├── tests/
 │   ├── unit/                     # CxxTest unit tests
 │   ├── integration/              # End-to-end verification tests
